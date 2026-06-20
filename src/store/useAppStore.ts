@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type {
   Patient, Doctor, FollowUpPlan, FollowUpRecord, Symptoms, ResultStatus,
   TreatmentType, DoctorReviewStatus, RebookTask, SummaryRow,
-  RebookTaskStatus
+  RebookTaskStatus, NurseSummaryRow, SummaryView
 } from '@/types';
 import { mockPatients, mockDoctors, mockPlans, mockRecords, mockRebookTasks, defaultCurrentNurse } from '@/data/mockData';
 import { TREATMENT_PRESETS } from '@/data/presets';
@@ -54,6 +54,7 @@ interface AppStore {
   getPendingReviewRecords: () => FollowUpRecord[];
 
   getRebookTasks: (filters?: { status?: string }) => RebookTask[];
+  getRebookTaskByRecordId: (recordId: string) => RebookTask | undefined;
   createRebookTask: (params: {
     recordId: string;
     doctorNote: string;
@@ -61,7 +62,10 @@ interface AppStore {
   updateRebookTaskStatus: (taskId: string, params: {
     status: RebookTaskStatus;
     nurseNote?: string;
+    appointmentDate?: string;
   }) => void;
+
+  getPhoneTemplate: (treatmentType: TreatmentType) => string;
 
   searchPlans: (filters?: {
     priority?: string;
@@ -102,12 +106,28 @@ interface AppStore {
     resultStatus?: string;
     doctorId?: string;
   }) => { total: number; normal: number; needReview: number; rebook: number; normalPct: number; needReviewPct: number; rebookPct: number };
-  getSummaryReport: (filters?: {
+  getSummaryReport: (view: SummaryView, filters?: {
     startDate?: string;
     endDate?: string;
     treatmentType?: string;
     doctorId?: string;
-  }) => SummaryRow[];
+  }) => SummaryRow[] | NurseSummaryRow[];
+
+  getNurseSummaryReport: (filters?: {
+    startDate?: string;
+    endDate?: string;
+    treatmentType?: string;
+    doctorId?: string;
+  }) => NurseSummaryRow[];
+
+  exportRecordsCsvWithViewSummary: (view: SummaryView, filters?: {
+    startDate?: string;
+    endDate?: string;
+    keyword?: string;
+    treatmentType?: string;
+    resultStatus?: string;
+    doctorId?: string;
+  }) => string;
 }
 
 const STORAGE_KEY = 'dental-followup-data';
@@ -115,7 +135,13 @@ const STORAGE_KEY = 'dental-followup-data';
 function loadFromStorage() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (!data.rebookTasks) data.rebookTasks = [];
+      if (!data.records) data.records = [];
+      if (!data.plans) data.plans = [];
+      return data;
+    }
   } catch { }
   return null;
 }
@@ -374,7 +400,7 @@ export const useAppStore = create<AppStore>((set, get) => {
       return newTask;
     },
 
-    updateRebookTaskStatus: (taskId, { status, nurseNote }) => {
+    updateRebookTaskStatus: (taskId, { status, nurseNote, appointmentDate }) => {
       set((s) => {
         const rebookTasks = s.rebookTasks.map(t => {
           if (t.id !== taskId) return t;
@@ -382,13 +408,21 @@ export const useAppStore = create<AppStore>((set, get) => {
             ...t,
             status,
             nurseNote: nurseNote || t.nurseNote,
-            contactDate: getTodayStr()
+            contactDate: status === 'contacted' ? getTodayStr() : t.contactDate,
+            appointmentDate: appointmentDate || t.appointmentDate,
+            confirmedDate: status === 'confirmed' ? getTodayStr() : t.confirmedDate
           };
         });
         saveToStorage({ ...s, rebookTasks });
         return { rebookTasks };
       });
     },
+
+    getRebookTaskByRecordId: (recordId) =>
+      get().rebookTasks.find(t => t.recordId === recordId),
+
+    getPhoneTemplate: (treatmentType) =>
+      TREATMENT_PRESETS[treatmentType]?.phoneTemplate || '',
 
     searchPlans: (filters) => {
       let result = [...get().plans];
@@ -472,7 +506,7 @@ export const useAppStore = create<AppStore>((set, get) => {
 
     exportRecordsCsvWithSummary: (filters) => {
       const recordsCsv = get().exportRecordsCsv(filters);
-      const summary = get().getSummaryReport(filters);
+      const summary = get().getSummaryReport('doctor', filters) as SummaryRow[];
       let summaryPart = '\n\n===== 汇总报表 =====\n';
       summaryPart += ['医生', '科室', '治疗项目', '总完成量', '正常恢复', '需复核', '已复核完成', '建议复诊'].join(',') + '\n';
       summary.forEach(row => {
@@ -507,7 +541,10 @@ export const useAppStore = create<AppStore>((set, get) => {
       };
     },
 
-    getSummaryReport: (filters) => {
+    getSummaryReport: (view, filters) => {
+      if (view === 'nurse') {
+        return get().getNurseSummaryReport(filters);
+      }
       const { getDoctorById, plans } = get();
       const recs = get().searchRecords(filters);
       const map = new Map<string, SummaryRow>();
@@ -546,6 +583,70 @@ export const useAppStore = create<AppStore>((set, get) => {
         if (a.doctorId !== b.doctorId) return a.doctorName.localeCompare(b.doctorName);
         return a.treatmentType.localeCompare(b.treatmentType);
       });
+    },
+
+    getNurseSummaryReport: (filters) => {
+      const recs = get().searchRecords(filters);
+      const map = new Map<string, NurseSummaryRow>();
+
+      recs.forEach(record => {
+        const nurseName = record.nurseName || '未知';
+        if (!map.has(nurseName)) {
+          map.set(nurseName, {
+            nurseName,
+            totalCompleted: 0,
+            normal: 0,
+            needReview: 0,
+            rebook: 0,
+            delayedCount: 0
+          });
+        }
+        const row = map.get(nurseName)!;
+        row.totalCompleted++;
+        if (record.resultStatus === 'normal') row.normal++;
+        if (record.resultStatus === 'need_review') row.needReview++;
+        if (record.resultStatus === 'rebook') row.rebook++;
+      });
+
+      return Array.from(map.values()).sort((a, b) => b.totalCompleted - a.totalCompleted);
+    },
+
+    exportRecordsCsvWithViewSummary: (view, filters) => {
+      const recordsCsv = get().exportRecordsCsv(filters);
+      let summaryPart = '\n\n===== 汇总报表 (';
+      summaryPart += view === 'doctor' ? '按医生统计' : '按护士统计';
+      summaryPart += ') =====\n';
+
+      if (view === 'doctor') {
+        const summary = get().getSummaryReport('doctor', filters) as SummaryRow[];
+        summaryPart += ['医生', '科室', '治疗项目', '总完成量', '正常恢复', '需复核', '已复核完成', '建议复诊'].join(',') + '\n';
+        summary.forEach(row => {
+          summaryPart += [
+            row.doctorName,
+            row.department,
+            getTreatmentLabel(row.treatmentType),
+            row.totalCompleted,
+            row.normal,
+            row.needReview,
+            row.reviewHandled,
+            row.rebookSuggested
+          ].map(v => `"${v}"`).join(',') + '\n';
+        });
+      } else {
+        const summary = get().getNurseSummaryReport(filters);
+        summaryPart += ['护士', '总完成量', '正常恢复', '需复核', '预约复诊'].join(',') + '\n';
+        summary.forEach(row => {
+          summaryPart += [
+            row.nurseName,
+            row.totalCompleted,
+            row.normal,
+            row.needReview,
+            row.rebook
+          ].map(v => `"${v}"`).join(',') + '\n';
+        });
+      }
+
+      return recordsCsv + summaryPart;
     }
   };
 });

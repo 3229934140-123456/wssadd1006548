@@ -1,13 +1,13 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   CalendarDays, Clock, AlertCircle, User,
   Phone, Search, Filter, Stethoscope, FileText, AlertTriangle,
-  ChevronRight, X, CalendarRange, Download, BarChart3, ChevronDown,
-  Table as TableIcon
+  ChevronRight, CalendarRange, Download, BarChart3, ChevronDown,
+  Table as TableIcon, RefreshCw
 } from 'lucide-react';
-import { cn, getTodayStr, getTreatmentLabel, getDayStageLabel, getGenderLabel } from '@/utils/helpers';
+import { cn, getTodayStr, getTreatmentLabel, getDayStageLabel, getGenderLabel, getRebookStatusLabel } from '@/utils/helpers';
 import { useAppStore } from '@/store/useAppStore';
-import type { FollowUpRecord, ResultStatus, SummaryRow } from '@/types';
+import type { FollowUpRecord, ResultStatus, SummaryRow, NurseSummaryRow, SummaryView } from '@/types';
 import StatsCard from '@/components/StatsCard';
 import Drawer from '@/components/Drawer';
 import Timeline from '@/components/Timeline';
@@ -20,6 +20,15 @@ const resultColors: Record<ResultStatus, string> = {
 const resultLabels: Record<ResultStatus, string> = { normal: '恢复正常', need_review: '需医生复核', rebook: '预约复诊' };
 const treatmentColors: Record<string, string> = { implant: 'bg-purple-50 text-purple-700 border-purple-100', extraction: 'bg-orange-50 text-orange-700 border-orange-100', root_canal: 'bg-cyan-50 text-cyan-700 border-cyan-100' };
 
+type DateRangeMode = 'month' | 'custom';
+
+function getMonthStartStr(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  return `${y}-${m}-01`;
+}
+
 export default function Records() {
   const records = useAppStore(s => s.records);
   const plans = useAppStore(s => s.plans);
@@ -30,10 +39,13 @@ export default function Records() {
   const getPlansByPatientId = useAppStore(s => s.getPlansByPatientId);
   const searchRecords = useAppStore(s => s.searchRecords);
   const exportRecordsCsv = useAppStore(s => s.exportRecordsCsv);
-  const exportRecordsCsvWithSummary = useAppStore(s => s.exportRecordsCsvWithSummary);
   const getRecordsStats = useAppStore(s => s.getRecordsStats);
   const getSummaryReport = useAppStore(s => s.getSummaryReport);
+  const getNurseSummaryReport = useAppStore(s => s.getNurseSummaryReport);
+  const exportRecordsCsvWithViewSummary = useAppStore(s => s.exportRecordsCsvWithViewSummary);
+  const getRebookTaskByRecordId = useAppStore(s => s.getRebookTaskByRecordId);
 
+  const [dateRangeMode, setDateRangeMode] = useState<DateRangeMode>('month');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -43,6 +55,14 @@ export default function Records() {
   const [selectedRecord, setSelectedRecord] = useState<FollowUpRecord | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
+  const [summaryView, setSummaryView] = useState<SummaryView>('doctor');
+
+  useEffect(() => {
+    if (dateRangeMode === 'month') {
+      setStartDate(getMonthStartStr());
+      setEndDate(getTodayStr());
+    }
+  }, [dateRangeMode]);
 
   const filterParams = useMemo(() => ({ startDate: startDate || undefined, endDate: endDate || undefined, keyword: searchKeyword, treatmentType: filterTreatment, resultStatus: filterResult, doctorId: filterDoctor }), [startDate, endDate, searchKeyword, filterTreatment, filterResult, filterDoctor]);
 
@@ -56,8 +76,8 @@ export default function Records() {
   const resultStats = useMemo(() => getRecordsStats(filterParams), [filterParams, getRecordsStats]);
   const displayedRecords = useMemo(() => searchRecords(filterParams), [searchRecords, filterParams]);
 
-  const summaryReport = useMemo(() => {
-    const rows = getSummaryReport(filterParams);
+  const doctorSummaryReport = useMemo(() => {
+    const rows = getSummaryReport('doctor', filterParams) as SummaryRow[];
     const doctorGroups = new Map<string, SummaryRow[]>();
     rows.forEach(row => {
       if (!doctorGroups.has(row.doctorId)) {
@@ -106,6 +126,21 @@ export default function Records() {
     return { rows, doctorSubtotals, grandTotal, tableRows };
   }, [filterParams, getSummaryReport]);
 
+  const nurseSummaryReport = useMemo(() => {
+    const rows = getNurseSummaryReport(filterParams);
+    const grandTotal: NurseSummaryRow & { isGrandTotal?: boolean } = {
+      nurseName: '合计',
+      totalCompleted: rows.reduce((sum, r) => sum + r.totalCompleted, 0),
+      normal: rows.reduce((sum, r) => sum + r.normal, 0),
+      needReview: rows.reduce((sum, r) => sum + r.needReview, 0),
+      rebook: rows.reduce((sum, r) => sum + r.rebook, 0),
+      delayedCount: rows.reduce((sum, r) => sum + r.delayedCount, 0),
+      isGrandTotal: true
+    };
+    const tableRows = [...rows, grandTotal];
+    return { rows, grandTotal, tableRows };
+  }, [filterParams, getNurseSummaryReport]);
+
   const openDrawer = (record: FollowUpRecord) => { setSelectedRecord(record); setDrawerOpen(true); };
   const closeDrawer = () => { setDrawerOpen(false); setTimeout(() => setSelectedRecord(null), 300); };
 
@@ -125,9 +160,10 @@ export default function Records() {
     setExportDropdownOpen(false);
   };
 
-  const handleExportRecordsWithSummary = () => {
-    const csv = exportRecordsCsvWithSummary(filterParams);
-    downloadCsv(csv, '回访记录_汇总');
+  const handleExportRecordsWithViewSummary = () => {
+    const csv = exportRecordsCsvWithViewSummary(summaryView, filterParams);
+    const label = summaryView === 'doctor' ? '按医生统计' : '按护士统计';
+    downloadCsv(csv, `回访记录_汇总_${label}`);
     setExportDropdownOpen(false);
   };
 
@@ -136,6 +172,15 @@ export default function Records() {
   const doctor = plan ? getDoctorById(plan.doctorId) : null;
   const patientAllRecords = patient ? getRecordsByPatientId(patient.id) : [];
   const patientAllPlans = patient ? getPlansByPatientId(patient.id) : [];
+  const rebookTask = selectedRecord ? getRebookTaskByRecordId(selectedRecord.id) : null;
+
+  const handleReset = () => {
+    setDateRangeMode('month');
+    setSearchKeyword('');
+    setFilterTreatment('all');
+    setFilterResult('all');
+    setFilterDoctor('all');
+  };
 
   return (
     <div className="space-y-6">
@@ -192,114 +237,244 @@ export default function Records() {
       </div>
 
       <div className="rounded-2xl bg-white border border-slate-200 overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 bg-slate-50/50">
-          <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-2">
-            <TableIcon className="w-4 h-4 text-blue-600" />
-            汇总报表
-          </h3>
-          <p className="mt-0.5 text-xs text-slate-500">按医生和治疗类型统计回访结果</p>
+        <div className="px-5 py-4 border-b border-slate-200 bg-slate-50/50 flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-2">
+              <TableIcon className="w-4 h-4 text-blue-600" />
+              汇总报表
+            </h3>
+            <p className="mt-0.5 text-xs text-slate-500">
+              {summaryView === 'doctor' ? '按医生和治疗类型统计回访结果' : '按护士统计回访工作量'}
+            </p>
+          </div>
+          <div className="flex items-center p-1 rounded-xl bg-slate-100">
+            <button
+              onClick={() => setSummaryView('doctor')}
+              className={cn(
+                'px-4 py-1.5 rounded-lg text-sm font-medium transition-all',
+                summaryView === 'doctor'
+                  ? 'bg-white text-blue-600 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-700'
+              )}
+            >
+              按医生
+            </button>
+            <button
+              onClick={() => setSummaryView('nurse')}
+              className={cn(
+                'px-4 py-1.5 rounded-lg text-sm font-medium transition-all',
+                summaryView === 'nurse'
+                  ? 'bg-white text-blue-600 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-700'
+              )}
+            >
+              按护士
+            </button>
+          </div>
         </div>
         <div className="overflow-x-auto">
-          {summaryReport.rows.length > 0 ? (
-            <table className="w-full">
-              <thead>
-                <tr className="bg-slate-50/80 border-b border-slate-200">
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">医生</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">科室</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">治疗项目</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">总完成</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">正常</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">需复核</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">已复核</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">建议复诊</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {summaryReport.tableRows.map((row, idx) => {
-                  const isSubtotal = 'isSubtotal' in row && row.isSubtotal;
-                  const isGrandTotal = 'isGrandTotal' in row && row.isGrandTotal;
-                  const isDataRow = !isSubtotal && !isGrandTotal;
-                  return (
-                    <tr
-                      key={idx}
-                      className={cn(
-                        isSubtotal && 'bg-blue-50/50',
-                        isGrandTotal && 'bg-slate-100 font-semibold',
-                        isDataRow && 'hover:bg-slate-50/50 transition-colors'
-                      )}
-                    >
-                      <td className="px-4 py-3">
-                        <span className={cn(
-                          'text-sm',
-                          isDataRow ? 'text-slate-800' : 'text-slate-700 font-semibold'
-                        )}>
-                          {row.doctorName}
-                          {isSubtotal && <span className="text-xs text-slate-500 font-normal ml-2">小计</span>}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="text-sm text-slate-600">
-                          {isGrandTotal ? '' : row.department}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        {row.treatmentType ? (
-                          <span className={cn('inline-flex px-2 py-0.5 rounded-md text-xs font-medium border', treatmentColors[row.treatmentType])}>
-                            {getTreatmentLabel(row.treatmentType)}
+          {summaryView === 'doctor' ? (
+            doctorSummaryReport.rows.length > 0 ? (
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-slate-50/80 border-b border-slate-200">
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">医生</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">科室</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">治疗项目</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">总完成</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">正常</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">需复核</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">已复核</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">建议复诊</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {doctorSummaryReport.tableRows.map((row, idx) => {
+                    const isSubtotal = 'isSubtotal' in row && row.isSubtotal;
+                    const isGrandTotal = 'isGrandTotal' in row && row.isGrandTotal;
+                    const isDataRow = !isSubtotal && !isGrandTotal;
+                    return (
+                      <tr
+                        key={idx}
+                        className={cn(
+                          isSubtotal && 'bg-blue-50/50',
+                          isGrandTotal && 'bg-slate-100 font-semibold',
+                          isDataRow && 'hover:bg-slate-50/50 transition-colors'
+                        )}
+                      >
+                        <td className="px-4 py-3">
+                          <span className={cn(
+                            'text-sm',
+                            isDataRow ? 'text-slate-800' : 'text-slate-700 font-semibold'
+                          )}>
+                            {row.doctorName}
+                            {isSubtotal && <span className="text-xs text-slate-500 font-normal ml-2">小计</span>}
                           </span>
-                        ) : isSubtotal || isGrandTotal ? (
-                          <span className="text-xs text-slate-400">-</span>
-                        ) : null}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <span className={cn(
-                          'text-sm font-bold',
-                          isDataRow ? 'text-slate-800' : 'text-blue-700'
-                        )}>
-                          {row.totalCompleted}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <span className="text-sm font-medium text-emerald-700">{row.normal}</span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <span className="text-sm font-medium text-amber-700">{row.needReview}</span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <span className="text-sm font-medium text-emerald-600">{row.reviewHandled}</span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <span className="text-sm font-medium text-blue-600">{row.rebookSuggested}</span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          ) : (
-            <div className="px-6 py-16 text-center">
-              <div className="w-16 h-16 mx-auto rounded-full bg-slate-100 flex items-center justify-center">
-                <TableIcon className="w-8 h-8 text-slate-400" />
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="text-sm text-slate-600">
+                            {isGrandTotal ? '' : row.department}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {row.treatmentType ? (
+                            <span className={cn('inline-flex px-2 py-0.5 rounded-md text-xs font-medium border', treatmentColors[row.treatmentType])}>
+                              {getTreatmentLabel(row.treatmentType)}
+                            </span>
+                          ) : isSubtotal || isGrandTotal ? (
+                            <span className="text-xs text-slate-400">-</span>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className={cn(
+                            'text-sm font-bold',
+                            isDataRow ? 'text-slate-800' : 'text-blue-700'
+                          )}>
+                            {row.totalCompleted}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className="text-sm font-medium text-emerald-700">{row.normal}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className="text-sm font-medium text-amber-700">{row.needReview}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className="text-sm font-medium text-emerald-600">{row.reviewHandled}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className="text-sm font-medium text-blue-600">{row.rebookSuggested}</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : (
+              <div className="px-6 py-16 text-center">
+                <div className="w-16 h-16 mx-auto rounded-full bg-slate-100 flex items-center justify-center">
+                  <TableIcon className="w-8 h-8 text-slate-400" />
+                </div>
+                <p className="mt-4 text-sm font-medium text-slate-600">暂无汇总数据</p>
               </div>
-              <p className="mt-4 text-sm font-medium text-slate-600">暂无汇总数据</p>
-            </div>
+            )
+          ) : (
+            nurseSummaryReport.rows.length > 0 ? (
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-slate-50/80 border-b border-slate-200">
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">护士</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">总完成量</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">正常恢复</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">需复核</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wider">预约复诊</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {nurseSummaryReport.tableRows.map((row, idx) => {
+                    const isGrandTotal = 'isGrandTotal' in row && row.isGrandTotal;
+                    const isDataRow = !isGrandTotal;
+                    return (
+                      <tr
+                        key={idx}
+                        className={cn(
+                          isGrandTotal && 'bg-slate-100 font-semibold',
+                          isDataRow && 'hover:bg-slate-50/50 transition-colors'
+                        )}
+                      >
+                        <td className="px-4 py-3">
+                          <span className={cn(
+                            'text-sm',
+                            isDataRow ? 'text-slate-800' : 'text-slate-700 font-semibold'
+                          )}>
+                            {row.nurseName}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className={cn(
+                            'text-sm font-bold',
+                            isDataRow ? 'text-slate-800' : 'text-blue-700'
+                          )}>
+                            {row.totalCompleted}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className="text-sm font-medium text-emerald-700">{row.normal}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className="text-sm font-medium text-amber-700">{row.needReview}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className="text-sm font-medium text-blue-600">{row.rebook}</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : (
+              <div className="px-6 py-16 text-center">
+                <div className="w-16 h-16 mx-auto rounded-full bg-slate-100 flex items-center justify-center">
+                  <TableIcon className="w-8 h-8 text-slate-400" />
+                </div>
+                <p className="mt-4 text-sm font-medium text-slate-600">暂无汇总数据</p>
+              </div>
+            )
           )}
         </div>
-        {summaryReport.rows.length > 0 && (
+        {(summaryView === 'doctor' ? doctorSummaryReport.rows.length > 0 : nurseSummaryReport.rows.length > 0) && (
           <div className="px-5 py-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between">
-            <span className="text-xs text-slate-500">共 <span className="font-semibold text-slate-700">{summaryReport.rows.length}</span> 条明细记录</span>
+            <span className="text-xs text-slate-500">
+              共 <span className="font-semibold text-slate-700">
+                {summaryView === 'doctor' ? doctorSummaryReport.rows.length : nurseSummaryReport.rows.length}
+              </span> 条明细记录
+            </span>
           </div>
         )}
       </div>
 
       <div className="rounded-2xl bg-white border border-slate-200 p-4 space-y-4">
         <div className="flex items-center gap-4 flex-wrap">
-          <div className="flex items-center gap-2">
-            <CalendarRange className="w-4 h-4 text-slate-400" />
-            <span className="text-sm text-slate-600">日期：</span>
-            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="h-10 px-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
-            <span className="text-slate-400">至</span>
-            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="h-10 px-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center p-1 rounded-xl bg-slate-100">
+              <button
+                onClick={() => setDateRangeMode('month')}
+                className={cn(
+                  'px-4 py-1.5 rounded-lg text-sm font-medium transition-all',
+                  dateRangeMode === 'month'
+                    ? 'bg-white text-blue-600 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700'
+                )}
+              >
+                本月
+              </button>
+              <button
+                onClick={() => setDateRangeMode('custom')}
+                className={cn(
+                  'px-4 py-1.5 rounded-lg text-sm font-medium transition-all',
+                  dateRangeMode === 'custom'
+                    ? 'bg-white text-blue-600 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700'
+                )}
+              >
+                自定义
+              </button>
+            </div>
+            {dateRangeMode === 'custom' && (
+              <div className="flex items-center gap-2">
+                <CalendarRange className="w-4 h-4 text-slate-400" />
+                <span className="text-sm text-slate-600">日期：</span>
+                <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="h-10 px-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                <span className="text-slate-400">至</span>
+                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="h-10 px-3 rounded-xl border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+              </div>
+            )}
+            {dateRangeMode === 'month' && (
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                <CalendarDays className="w-3.5 h-3.5" />
+                <span>{getMonthStartStr()} 至 {getTodayStr()}</span>
+              </div>
+            )}
           </div>
           <div className="h-6 w-px bg-slate-200" />
           <div className="relative flex-1 min-w-[180px]">
@@ -332,7 +507,7 @@ export default function Records() {
               <option value="rebook">预约复诊</option>
             </select>
           </div>
-          <button onClick={() => { setStartDate(''); setEndDate(''); setSearchKeyword(''); setFilterTreatment('all'); setFilterResult('all'); setFilterDoctor('all'); }} className="h-10 px-4 rounded-xl border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 transition-colors flex items-center gap-1.5"><X className="w-3.5 h-3.5" />重置</button>
+          <button onClick={handleReset} className="h-10 px-4 rounded-xl border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 transition-colors flex items-center gap-1.5"><RefreshCw className="w-3.5 h-3.5" />重置</button>
           <div className="relative">
             <div className="flex items-center">
               <button onClick={handleExportRecords} className="h-10 px-4 rounded-l-xl bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors flex items-center gap-1.5"><Download className="w-4 h-4" />导出</button>
@@ -346,20 +521,20 @@ export default function Records() {
             {exportDropdownOpen && (
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setExportDropdownOpen(false)} />
-                <div className="absolute right-0 top-full mt-1 z-20 w-48 rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
+                <div className="absolute right-0 top-full mt-1 z-20 w-64 rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
                   <button
                     onClick={handleExportRecords}
                     className="w-full px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50 transition-colors flex items-center gap-2"
                   >
                     <FileText className="w-4 h-4 text-slate-400" />
-                    导出明细
+                    仅导出明细
                   </button>
                   <button
-                    onClick={handleExportRecordsWithSummary}
+                    onClick={handleExportRecordsWithViewSummary}
                     className="w-full px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50 transition-colors flex items-center gap-2 border-t border-slate-100"
                   >
                     <TableIcon className="w-4 h-4 text-slate-400" />
-                    导出明细+汇总
+                    导出明细 + 汇总（{summaryView === 'doctor' ? '按医生统计' : '按护士统计'}）
                   </button>
                 </div>
               </>
@@ -438,6 +613,52 @@ export default function Records() {
                 {plan && <div className="mt-2 flex items-center gap-4 text-xs text-slate-500"><span className={cn('px-2 py-0.5 rounded-md border font-medium', treatmentColors[plan.treatmentType])}>{getTreatmentLabel(plan.treatmentType)}</span><span>{getDayStageLabel(plan.daysAfterSurgery)}</span><span>{doctor?.name} 医生</span></div>}
               </div>
             </div>
+
+            {rebookTask && (
+              <div className="p-5 rounded-2xl bg-gradient-to-br from-blue-50/80 to-indigo-50/50 border border-blue-200">
+                <h4 className="text-sm font-semibold text-slate-800 mb-3 flex items-center gap-2">
+                  <RefreshCw className="w-4 h-4 text-blue-600" />
+                  复诊任务
+                </h4>
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-slate-500 w-20">复诊状态</span>
+                    <span className={cn(
+                      'px-2.5 py-1 rounded-lg text-xs font-semibold border',
+                      rebookTask.status === 'pending_contact' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                      rebookTask.status === 'contacted' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                      rebookTask.status === 'confirmed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                      'bg-slate-50 text-slate-600 border-slate-200'
+                    )}>
+                      {getRebookStatusLabel(rebookTask.status)}
+                    </span>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <span className="text-xs text-slate-500 w-20 mt-0.5">医生建议</span>
+                    <p className="text-sm text-slate-700 flex-1">{rebookTask.doctorNote}</p>
+                  </div>
+                  {rebookTask.nurseNote && (
+                    <div className="flex items-start gap-3">
+                      <span className="text-xs text-slate-500 w-20 mt-0.5">护士联系备注</span>
+                      <p className="text-sm text-slate-700 flex-1">{rebookTask.nurseNote}</p>
+                    </div>
+                  )}
+                  {rebookTask.appointmentDate && (
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-slate-500 w-20">约定复诊日期</span>
+                      <span className="text-sm font-medium text-emerald-700 flex items-center gap-1">
+                        <CalendarDays className="w-3.5 h-3.5" />
+                        {rebookTask.appointmentDate}
+                      </span>
+                    </div>
+                  )}
+                  <div className="pt-2 border-t border-blue-100">
+                    <span className="text-xs text-slate-400">创建人：{rebookTask.createdBy}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div>
               <h4 className="text-sm font-semibold text-slate-800 mb-3 flex items-center gap-2"><AlertCircle className="w-4 h-4 text-slate-500" />症状记录</h4>
               <div className="grid grid-cols-2 gap-3">

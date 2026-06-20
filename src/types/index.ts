@@ -77,8 +77,21 @@ export interface RebookTask {
   status: RebookTaskStatus;
   nurseNote?: string;
   contactDate?: string;
+  appointmentDate?: string;
+  confirmedDate?: string;
   createdAt: string;
   createdBy: string;
+}
+
+export type SummaryView = 'doctor' | 'nurse';
+
+export interface NurseSummaryRow {
+  nurseName: string;
+  totalCompleted: number;
+  normal: number;
+  needReview: number;
+  rebook: number;
+  delayedCount: number;
 }
 
 export interface AppState {

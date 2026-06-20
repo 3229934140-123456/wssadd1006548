@@ -1,13 +1,13 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import {
   CalendarDays, Clock, CheckCircle2, AlertCircle, User,
   Phone, Search, Filter, Stethoscope, FileText, AlertTriangle,
   ChevronLeft, ChevronRight, PhoneCall, X, MessageSquare,
-  ListTodo, BellRing, RefreshCw
+  ListTodo, BellRing, RefreshCw, Mic, Check, XCircle
 } from 'lucide-react';
 import { cn, getTodayStr, formatDate, getTreatmentLabel, getPriorityLabel, getDayStageLabel, getGenderLabel, getRebookStatusLabel } from '@/utils/helpers';
 import { useAppStore } from '@/store/useAppStore';
-import type { FollowUpPlan, Priority, FollowUpStatus, RebookTaskStatus } from '@/types';
+import type { FollowUpPlan, Priority, FollowUpStatus, RebookTaskStatus, TreatmentType } from '@/types';
 import StatsCard from '@/components/StatsCard';
 import PatientCard from '@/components/PatientCard';
 import Drawer from '@/components/Drawer';
@@ -24,6 +24,9 @@ const rebookStatusStyles: Record<RebookTaskStatus, string> = {
   cancelled: 'bg-slate-50 text-slate-600 border-slate-200'
 };
 
+type RebookTab = 'pending' | 'archived';
+type RebookDialogAction = 'confirmed' | 'contacted' | 'cancelled';
+
 export default function TodayList() {
   const getPendingPlans = useAppStore(s => s.getPendingPlans);
   const getOverduePlans = useAppStore(s => s.getOverduePlans);
@@ -35,6 +38,7 @@ export default function TodayList() {
   const getPatientById = useAppStore(s => s.getPatientById);
   const getDoctorById = useAppStore(s => s.getDoctorById);
   const getRecordsByPatientId = useAppStore(s => s.getRecordsByPatientId);
+  const getPhoneTemplate = useAppStore(s => s.getPhoneTemplate);
   const plans = useAppStore(s => s.plans);
 
   const [filterPriority, setFilterPriority] = useState<string>('all');
@@ -44,10 +48,17 @@ export default function TodayList() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
   const [batchIndex, setBatchIndex] = useState(0);
+  const [completedBatchPlanIds, setCompletedBatchPlanIds] = useState<Set<string>>(new Set());
+  const [batchNote, setBatchNote] = useState('');
+  const [batchNoteExpanded, setBatchNoteExpanded] = useState(false);
   const [contactingRebookId, setContactingRebookId] = useState<string | null>(null);
+  const [rebookDialogAction, setRebookDialogAction] = useState<RebookDialogAction>('contacted');
   const [rebookNote, setRebookNote] = useState('');
+  const [rebookAppointmentDate, setRebookAppointmentDate] = useState('');
+  const [rebookTab, setRebookTab] = useState<RebookTab>('pending');
 
   const today = getTodayStr();
+  const notesRef = useRef<HTMLTextAreaElement>(null);
 
   const stats = useMemo(() => {
     const pendingPlans = getPendingPlans();
@@ -86,20 +97,37 @@ export default function TodayList() {
     });
   }, [getPendingPlans, filterPriority, filterTreatment, searchKeyword, getPatientById, today]);
 
-  const rebookTasks = useMemo(() => {
+  const pendingRebookTasks = useMemo(() => {
     return getRebookTasks().filter(t => t.status === 'pending_contact' || t.status === 'contacted');
   }, [getRebookTasks]);
+
+  const archivedRebookTasks = useMemo(() => {
+    return getRebookTasks().filter(t => t.status === 'confirmed' || t.status === 'cancelled');
+  }, [getRebookTasks]);
+
+  const displayedRebookTasks = rebookTab === 'pending' ? pendingRebookTasks : archivedRebookTasks;
 
   const snoozedPlans = useMemo(() => {
     return getSnoozedPlans();
   }, [getSnoozedPlans]);
 
   const batchSortedPlans = useMemo(() => {
-    return [...displayedPendingPlans].sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
-  }, [displayedPendingPlans]);
+    return [...displayedPendingPlans].sort((a, b) => {
+      const pDiff = priorityOrder[a.priority] - priorityOrder[b.priority];
+      if (pDiff !== 0) return pDiff;
+      const isOverdueA = a.scheduledDate < today ? 0 : 1;
+      const isOverdueB = b.scheduledDate < today ? 0 : 1;
+      return isOverdueA - isOverdueB;
+    });
+  }, [displayedPendingPlans, today]);
 
-  const currentBatchPatient = batchSortedPlans[batchIndex] || null;
-  const currentBatchPatientData = currentBatchPatient ? getPatientById(currentBatchPatient.patientId) : null;
+  const unprocessedBatchPlans = useMemo(() => {
+    return batchSortedPlans.filter(p => !completedBatchPlanIds.has(p.id));
+  }, [batchSortedPlans, completedBatchPlanIds]);
+
+  const currentBatchPlan = unprocessedBatchPlans[batchIndex] || unprocessedBatchPlans[0] || null;
+  const currentBatchPatientData = currentBatchPlan ? getPatientById(currentBatchPlan.patientId) : null;
+  const allBatchCompleted = unprocessedBatchPlans.length === 0 && batchSortedPlans.length > 0;
 
   const openDrawer = (plan: FollowUpPlan) => {
     setSelectedPlan(plan);
@@ -117,64 +145,141 @@ export default function TodayList() {
 
   const handleRebookContact = (taskId: string) => {
     setContactingRebookId(taskId);
+    setRebookDialogAction('contacted');
     setRebookNote('');
+    setRebookAppointmentDate('');
   };
 
   const handleRebookContactSubmit = (taskId: string) => {
-    updateRebookTaskStatus(taskId, {
-      status: 'contacted',
+    const params: {
+      status: RebookTaskStatus;
+      nurseNote?: string;
+      appointmentDate?: string;
+    } = {
+      status: rebookDialogAction as RebookTaskStatus,
       nurseNote: rebookNote
-    });
+    };
+    if (rebookDialogAction === 'confirmed' && rebookAppointmentDate) {
+      params.appointmentDate = rebookAppointmentDate;
+    }
+    updateRebookTaskStatus(taskId, params);
     setContactingRebookId(null);
     setRebookNote('');
+    setRebookAppointmentDate('');
+    setRebookDialogAction('contacted');
+  };
+
+  const findNextUnprocessedIndex = () => {
+    const currentId = currentBatchPlan?.id;
+    const remaining = unprocessedBatchPlans.filter(p => p.id !== currentId);
+    if (remaining.length === 0) {
+      return -1;
+    }
+    const nextPlan = remaining[0];
+    return batchSortedPlans.findIndex(p => p.id === nextPlan.id);
   };
 
   const handleBatchMissedCall = () => {
-    if (currentBatchPatient) {
-      delayFollowUp(currentBatchPatient.id, '2h');
-      if (batchIndex < batchSortedPlans.length - 1) {
-        setBatchIndex(prev => prev + 1);
+    if (currentBatchPlan) {
+      const currentId = currentBatchPlan.id;
+      delayFollowUp(currentBatchPlan.id, '2h');
+      setCompletedBatchPlanIds(prev => new Set([...prev, currentId]));
+      const nextIdx = findNextUnprocessedIndex();
+      if (nextIdx >= 0) {
+        setBatchIndex(nextIdx);
       }
+      setBatchNote('');
     }
   };
 
   const handleBatchNormal = () => {
-    if (currentBatchPatient) {
+    if (currentBatchPlan) {
+      const currentId = currentBatchPlan.id;
       completeFollowUp({
-        planId: currentBatchPatient.id,
+        planId: currentBatchPlan.id,
         symptoms: { pain: false, swelling: false, bleeding: false, medication: true, other: '' },
         resultStatus: 'normal',
-        notes: '批量拨打 - 患者恢复正常',
+        notes: batchNote || '批量拨打 - 患者恢复正常',
         contactSuccess: true
       });
-      if (batchIndex < batchSortedPlans.length - 1) {
-        setBatchIndex(prev => prev + 1);
+      setCompletedBatchPlanIds(prev => new Set([...prev, currentId]));
+      const nextIdx = findNextUnprocessedIndex();
+      if (nextIdx >= 0) {
+        setBatchIndex(nextIdx);
       }
+      setBatchNote('');
     }
   };
 
   const handleBatchNeedReview = () => {
-    if (currentBatchPatient) {
+    if (currentBatchPlan) {
+      const currentId = currentBatchPlan.id;
       completeFollowUp({
-        planId: currentBatchPatient.id,
+        planId: currentBatchPlan.id,
         symptoms: { pain: false, swelling: false, bleeding: false, medication: false, other: '' },
         resultStatus: 'need_review',
-        notes: '批量拨打 - 需医生复核',
+        notes: batchNote || '批量拨打 - 需医生复核',
         contactSuccess: true,
-        doctorQuestion: '批量拨打标记需复核'
+        doctorQuestion: batchNote || '批量拨打标记需复核'
       });
-      if (batchIndex < batchSortedPlans.length - 1) {
-        setBatchIndex(prev => prev + 1);
+      setCompletedBatchPlanIds(prev => new Set([...prev, currentId]));
+      const nextIdx = findNextUnprocessedIndex();
+      if (nextIdx >= 0) {
+        setBatchIndex(nextIdx);
       }
+      setBatchNote('');
+    }
+  };
+
+  const handleInsertTemplate = () => {
+    if (currentBatchPlan) {
+      const template = getPhoneTemplate(currentBatchPlan.treatmentType as TreatmentType);
+      setBatchNote(template);
+      setBatchNoteExpanded(true);
+      setTimeout(() => {
+        notesRef.current?.focus();
+      }, 50);
     }
   };
 
   const handlePrevPatient = () => {
-    setBatchIndex(prev => Math.max(0, prev - 1));
+    const currentIdxInUnprocessed = unprocessedBatchPlans.findIndex(p => p.id === currentBatchPlan?.id);
+    if (currentIdxInUnprocessed > 0) {
+      const prevPlan = unprocessedBatchPlans[currentIdxInUnprocessed - 1];
+      const idxInSorted = batchSortedPlans.findIndex(p => p.id === prevPlan.id);
+      if (idxInSorted >= 0) {
+        setBatchIndex(idxInSorted);
+        setBatchNote('');
+      }
+    }
   };
 
   const handleNextPatient = () => {
-    setBatchIndex(prev => Math.min(batchSortedPlans.length - 1, prev + 1));
+    const currentIdxInUnprocessed = unprocessedBatchPlans.findIndex(p => p.id === currentBatchPlan?.id);
+    if (currentIdxInUnprocessed >= 0 && currentIdxInUnprocessed < unprocessedBatchPlans.length - 1) {
+      const nextPlan = unprocessedBatchPlans[currentIdxInUnprocessed + 1];
+      const idxInSorted = batchSortedPlans.findIndex(p => p.id === nextPlan.id);
+      if (idxInSorted >= 0) {
+        setBatchIndex(idxInSorted);
+        setBatchNote('');
+      }
+    }
+  };
+
+  const handleExitBatchMode = () => {
+    setBatchMode(false);
+    setBatchIndex(0);
+    setCompletedBatchPlanIds(new Set());
+    setBatchNote('');
+    setBatchNoteExpanded(false);
+  };
+
+  const handleEnterBatchMode = () => {
+    setBatchMode(true);
+    setBatchIndex(0);
+    setCompletedBatchPlanIds(new Set());
+    setBatchNote('');
+    setBatchNoteExpanded(false);
   };
 
   const patient = selectedPlan ? getPatientById(selectedPlan.patientId) : null;
@@ -184,8 +289,12 @@ export default function TodayList() {
     ? plans.filter(p => p.patientId === patient.id).sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))
     : [];
 
+  const currentUnprocessedIndex = unprocessedBatchPlans.findIndex(p => p.id === currentBatchPlan?.id);
+  const canGoPrev = currentUnprocessedIndex > 0;
+  const canGoNext = currentUnprocessedIndex >= 0 && currentUnprocessedIndex < unprocessedBatchPlans.length - 1;
+
   return (
-    <div className={cn('space-y-6', batchMode && 'pb-48')}>
+    <div className={cn('space-y-6', batchMode && 'pb-64')}>
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
@@ -244,264 +353,435 @@ export default function TodayList() {
           </select>
         </div>
         <div className="h-8 w-px bg-slate-200" />
-        <button
-          onClick={() => {
-            setBatchMode(!batchMode);
-            setBatchIndex(0);
-          }}
-          className={cn(
-            'px-4 h-10 rounded-lg text-sm font-medium transition-all flex items-center gap-2',
-            batchMode
-              ? 'bg-blue-600 text-white shadow-sm shadow-blue-200'
-              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-          )}
-        >
-          <PhoneCall className="w-4 h-4" />
-          批量拨打模式
-        </button>
+        {batchMode ? (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleExitBatchMode}
+              className="px-4 h-10 rounded-lg text-sm font-medium transition-all flex items-center gap-2 border-2 border-red-500 text-red-600 hover:bg-red-50"
+            >
+              <XCircle className="w-4 h-4" />
+              退出批量模式
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={handleEnterBatchMode}
+            className={cn(
+              'px-4 h-10 rounded-lg text-sm font-medium transition-all flex items-center gap-2',
+              batchMode
+                ? 'bg-blue-600 text-white shadow-sm shadow-blue-200'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            )}
+          >
+            <PhoneCall className="w-4 h-4" />
+            批量拨打模式
+          </button>
+        )}
       </div>
 
       <div className="space-y-6">
         <div>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
+              <ListTodo className="w-5 h-5 text-amber-600" />
+              复诊待办
+            </h2>
+            <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-0.5">
+              <button
+                onClick={() => setRebookTab('pending')}
+                className={cn(
+                  'px-3 h-8 rounded-md text-sm font-medium transition-all',
+                  rebookTab === 'pending'
+                    ? 'bg-white text-slate-800 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700'
+                )}
+              >
+                待处理
+                <span className="ml-1.5 text-xs">({pendingRebookTasks.length})</span>
+              </button>
+              <button
+                onClick={() => setRebookTab('archived')}
+                className={cn(
+                  'px-3 h-8 rounded-md text-sm font-medium transition-all',
+                  rebookTab === 'archived'
+                    ? 'bg-white text-slate-800 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700'
+                )}
+              >
+                已归档
+                <span className="ml-1.5 text-xs">({archivedRebookTasks.length})</span>
+              </button>
+            </div>
+          </div>
+          {displayedRebookTasks.length === 0 ? (
+            <div className="rounded-2xl bg-white border border-slate-200 py-12 text-center">
+              <CheckCircle2 className="w-12 h-12 mx-auto text-emerald-400 mb-3" />
+              <p className="text-slate-500">{rebookTab === 'pending' ? '暂无复诊待办' : '暂无已归档复诊记录'}</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {displayedRebookTasks.map((task, idx) => {
+                const taskPatient = getPatientById(task.patientId);
+                const taskDoctor = getDoctorById(task.doctorId);
+                if (!taskPatient) return null;
+                return (
+                  <div key={task.id} style={{ animationDelay: `${idx * 40}ms` }} className="animate-[fadeInUp_0.4s_ease">
+                    <div className="group relative overflow-hidden rounded-xl bg-white border border-slate-200 p-4 transition-all duration-200 hover:shadow-md hover:-translate-y-0.5">
+                      <div className="flex items-start gap-4">
+                        <div className="flex-shrink-0">
+                          <div className={cn(
+                            'w-12 h-12 rounded-full bg-gradient-to-br flex items-center justify-center',
+                            taskPatient.gender === 'female' ? 'from-pink-100 to-pink-200' : 'from-blue-100 to-blue-200'
+                          )}>
+                            <User className={cn('w-6 h-6 text-slate-600')} />
+                          </div>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap mb-1">
+                            <h3 className="font-semibold text-slate-800">{taskPatient.name}</h3>
+                            <span className="px-1.5 py-0.5 rounded-md text-xs font-medium border bg-purple-50 text-purple-700 border-purple-100">
+                              {getTreatmentLabel(task.treatmentType)}
+                            </span>
+                            <span className={cn(
+                              'px-2 py-0.5 rounded-md text-xs font-medium border',
+                              rebookStatusStyles[task.status]
+                            )}>
+                              {getRebookStatusLabel(task.status)}
+                            </span>
+                          </div>
+                          <div className="text-sm text-slate-600 mb-2">
+                            <span className="text-slate-500">{taskDoctor?.name} 医生</span>
+                            <span className="mx-2 text-slate-300">·</span>
+                            <span>{getGenderLabel(taskPatient.gender)} · {taskPatient.age}岁</span>
+                            <span className="mx-2 text-slate-300">·</span>
+                            <a href={`tel:${taskPatient.phone}`} className="text-blue-600 hover:text-blue-700">{taskPatient.phone}</a>
+                          </div>
+                          <div className="text-sm text-slate-700 bg-amber-50 border border-amber-100 rounded-lg p-3">
+                            <div className="flex items-start gap-2">
+                              <MessageSquare className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                              <div>
+                                <p className="text-xs font-medium text-amber-800 mb-0.5">医生备注</p>
+                                <p className="text-sm text-slate-700">{task.doctorNote}</p>
+                              </div>
+                            </div>
+                          </div>
+                          {task.status === 'confirmed' && task.appointmentDate && (
+                            <div className="mt-2 text-sm text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg p-2.5">
+                              <span className="font-medium">复诊日期：</span>{task.appointmentDate}
+                            </div>
+                          )}
+                          {task.nurseNote && (
+                            <div className="mt-2 text-xs text-slate-500">
+                              <span className="font-medium">护士备注：</span>{task.nurseNote}
+                            </div>
+                          )}
+                          {contactingRebookId === task.id ? (
+                            <div className="mt-3 space-y-3 border-t border-slate-100 pt-3">
+                              <div className="space-y-2">
+                                <p className="text-sm font-medium text-slate-700">联系结果</p>
+                                <div className="flex gap-2 flex-wrap">
+                                  <label className={cn(
+                                    'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-all',
+                                    rebookDialogAction === 'confirmed'
+                                      ? 'border-emerald-500 bg-emerald-50 text-emerald-700'
+                                      : 'border-slate-200 hover:border-slate-300'
+                                  )}>
+                                    <input
+                                      type="radio"
+                                      name="rebookAction"
+                                      value="confirmed"
+                                      checked={rebookDialogAction === 'confirmed'}
+                                      onChange={() => setRebookDialogAction('confirmed')}
+                                      className="sr-only"
+                                    />
+                                    <Check className={cn('w-4 h-4', rebookDialogAction === 'confirmed' ? 'text-emerald-600' : 'text-transparent')} />
+                                    <span className="text-sm font-medium">患者确认复诊</span>
+                                  </label>
+                                  <label className={cn(
+                                    'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-all',
+                                    rebookDialogAction === 'contacted'
+                                      ? 'border-blue-500 bg-blue-50 text-blue-700'
+                                      : 'border-slate-200 hover:border-slate-300'
+                                  )}>
+                                    <input
+                                      type="radio"
+                                      name="rebookAction"
+                                      value="contacted"
+                                      checked={rebookDialogAction === 'contacted'}
+                                      onChange={() => setRebookDialogAction('contacted')}
+                                      className="sr-only"
+                                    />
+                                    <Check className={cn('w-4 h-4', rebookDialogAction === 'contacted' ? 'text-blue-600' : 'text-transparent')} />
+                                    <span className="text-sm font-medium">暂不确认</span>
+                                  </label>
+                                  <label className={cn(
+                                    'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-all',
+                                    rebookDialogAction === 'cancelled'
+                                      ? 'border-slate-500 bg-slate-100 text-slate-700'
+                                      : 'border-slate-200 hover:border-slate-300'
+                                  )}>
+                                    <input
+                                      type="radio"
+                                      name="rebookAction"
+                                      value="cancelled"
+                                      checked={rebookDialogAction === 'cancelled'}
+                                      onChange={() => setRebookDialogAction('cancelled')}
+                                      className="sr-only"
+                                    />
+                                    <Check className={cn('w-4 h-4', rebookDialogAction === 'cancelled' ? 'text-slate-600' : 'text-transparent')} />
+                                    <span className="text-sm font-medium">取消</span>
+                                  </label>
+                                </div>
+                              </div>
+                              {rebookDialogAction === 'confirmed' && (
+                                <div className="space-y-1.5">
+                                  <label className="text-sm font-medium text-slate-700">复诊日期</label>
+                                  <input
+                                    type="date"
+                                    value={rebookAppointmentDate}
+                                    onChange={(e) => setRebookAppointmentDate(e.target.value)}
+                                    min={today}
+                                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                                  />
+                                </div>
+                              )}
+                              <div className="space-y-1.5">
+                                <label className="text-sm font-medium text-slate-700">护士备注</label>
+                                <textarea
+                                  value={rebookNote}
+                                  onChange={(e) => setRebookNote(e.target.value)}
+                                  placeholder="请输入联系备注..."
+                                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none"
+                                  rows={2}
+                                />
+                              </div>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => handleRebookContactSubmit(task.id)}
+                                  disabled={rebookDialogAction === 'confirmed' && !rebookAppointmentDate}
+                                  className="px-4 h-9 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  确认
+                                </button>
+                                <button
+                                  onClick={() => setContactingRebookId(null)}
+                                  className="px-4 h-9 rounded-lg text-sm font-medium bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
+                                >
+                                  取消
+                                </button>
+                              </div>
+                            </div>
+                          ) : task.status === 'pending_contact' && (
+                            <button
+                              onClick={() => handleRebookContact(task.id)}
+                              className="mt-3 px-4 h-9 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-700 transition-colors flex items-center gap-2"
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                              已联系
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div>
           <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2 mb-3">
-          <ListTodo className="w-5 h-5 text-amber-600" />
-          复诊待办
-          <span className="text-sm font-normal text-slate-400">({rebookTasks.length})</span>
-        </h2>
-        {rebookTasks.length === 0 ? (
-          <div className="rounded-2xl bg-white border border-slate-200 py-12 text-center">
-            <CheckCircle2 className="w-12 h-12 mx-auto text-emerald-400 mb-3" />
-            <p className="text-slate-500">暂无复诊待办</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {rebookTasks.map((task, idx) => {
-            const taskPatient = getPatientById(task.patientId);
-            const taskDoctor = getDoctorById(task.doctorId);
-            if (!taskPatient) return null;
-            return (
-              <div key={task.id} style={{ animationDelay: `${idx * 40}ms` }} className="animate-[fadeInUp_0.4s_ease">
-                <div className="group relative overflow-hidden rounded-xl bg-white border border-slate-200 p-4 transition-all duration-200 hover:shadow-md hover:-translate-y-0.5">
-                  <div className="flex items-start gap-4">
-                    <div className="flex-shrink-0">
-                      <div className={cn(
-                        'w-12 h-12 rounded-full bg-gradient-to-br flex items-center justify-center',
-                        taskPatient.gender === 'female' ? 'from-pink-100 to-pink-200' : 'from-blue-100 to-blue-200'
-                      )}>
-                        <User className={cn('w-6 h-6 text-slate-600')} />
-                      </div>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap mb-1">
-                        <h3 className="font-semibold text-slate-800">{taskPatient.name}</h3>
-                        <span className="px-1.5 py-0.5 rounded-md text-xs font-medium border bg-purple-50 text-purple-700 border-purple-100">
-                          {getTreatmentLabel(task.treatmentType)}
-                        </span>
-                        <span className={cn(
-                          'px-2 py-0.5 rounded-md text-xs font-medium border',
-                          rebookStatusStyles[task.status]
-                        )}>
-                          {getRebookStatusLabel(task.status)}
-                        </span>
-                      </div>
-                      <div className="text-sm text-slate-600 mb-2">
-                        <span className="text-slate-500">{taskDoctor?.name} 医生</span>
-                        <span className="mx-2 text-slate-300">·</span>
-                        <span>{getGenderLabel(taskPatient.gender)} · {taskPatient.age}岁</span>
-                        <span className="mx-2 text-slate-300">·</span>
-                        <a href={`tel:${taskPatient.phone}`} className="text-blue-600 hover:text-blue-700">{taskPatient.phone}</a>
-                      </div>
-                      <div className="text-sm text-slate-700 bg-amber-50 border border-amber-100 rounded-lg p-3">
-                        <div className="flex items-start gap-2">
-                          <MessageSquare className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-                          <div>
-                            <p className="text-xs font-medium text-amber-800 mb-0.5">医生备注</p>
-                            <p className="text-sm text-slate-700">{task.doctorNote}</p>
-                          </div>
-                        </div>
-                      </div>
-                      {contactingRebookId === task.id ? (
-                        <div className="mt-3 space-y-2">
-                          <textarea
-                            value={rebookNote}
-                            onChange={(e) => setRebookNote(e.target.value)}
-                            placeholder="请输入联系备注..."
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none"
-                            rows={2}
-                          />
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => handleRebookContactSubmit(task.id)}
-                              className="px-4 h-9 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-                            >
-                              确认标记已联系
-                            </button>
-                            <button
-                              onClick={() => setContactingRebookId(null)}
-                              className="px-4 h-9 rounded-lg text-sm font-medium bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
-                            >
-                              取消
-                            </button>
-                          </div>
-                        </div>
-                      ) : task.status === 'pending_contact' && (
-                        <button
-                          onClick={() => handleRebookContact(task.id)}
-                          className="mt-3 px-4 h-9 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-700 transition-colors flex items-center gap-2"
-                        >
-                          <CheckCircle2 className="w-4 h-4" />
-                          已联系
-                        </button>
-                      )}
-                      {task.status === 'contacted' && task.nurseNote && (
-                        <div className="mt-2 text-xs text-slate-500">
-                          <span className="font-medium">护士备注：</span>{task.nurseNote}
-                        </div>
-                      )}
-                    </div>
-                  </div>
+            <CalendarDays className="w-5 h-5 text-blue-600" />
+            待处理回访
+            <span className="text-sm font-normal text-slate-400">({displayedPendingPlans.length})</span>
+          </h2>
+          {displayedPendingPlans.length === 0 ? (
+            <div className="rounded-2xl bg-white border border-slate-200 py-16 text-center">
+              <div className="w-16 h-16 mx-auto rounded-full bg-emerald-50 flex items-center justify-center"><CheckCircle2 className="w-8 h-8 text-emerald-400" /></div>
+              <h3 className="mt-4 text-lg font-semibold text-slate-800">暂无待回访患者</h3>
+              <p className="mt-1 text-sm text-slate-500">{searchKeyword || filterPriority !== 'all' || filterTreatment !== 'all' ? '当前筛选条件下没有待回访记录' : '今日回访工作已完成，辛苦了！'}</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {displayedPendingPlans.map((plan, idx) => (
+                <div key={plan.id} style={{ animationDelay: `${idx * 40}ms` }} className="animate-[fadeInUp_0.4s_ease">
+                  <PatientCard plan={plan} onClick={() => openDrawer(plan)} />
                 </div>
-              </div>
-            );
-          })}
-          </div>
-        )}
-      </div>
+              ))}
+            </div>
+          )}
+        </div>
 
-      <div>
-        <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2 mb-3">
-          <CalendarDays className="w-5 h-5 text-blue-600" />
-          待处理回访
-          <span className="text-sm font-normal text-slate-400">({displayedPendingPlans.length})</span>
-        </h2>
-        {displayedPendingPlans.length === 0 ? (
-          <div className="rounded-2xl bg-white border border-slate-200 py-16 text-center">
-            <div className="w-16 h-16 mx-auto rounded-full bg-emerald-50 flex items-center justify-center"><CheckCircle2 className="w-8 h-8 text-emerald-400" /></div>
-            <h3 className="mt-4 text-lg font-semibold text-slate-800">暂无待回访患者</h3>
-            <p className="mt-1 text-sm text-slate-500">{searchKeyword || filterPriority !== 'all' || filterTreatment !== 'all' ? '当前筛选条件下没有待回访记录' : '今日回访工作已完成，辛苦了！'}</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {displayedPendingPlans.map((plan, idx) => (
-              <div key={plan.id} style={{ animationDelay: `${idx * 40}ms` }} className="animate-[fadeInUp_0.4s_ease">
-                <PatientCard plan={plan} onClick={() => openDrawer(plan)} />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div>
-        <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2 mb-3">
-          <BellRing className="w-5 h-5 text-indigo-600" />
-          稍后提醒
-          <span className="text-sm font-normal text-slate-400">({snoozedPlans.length})</span>
-        </h2>
-        {snoozedPlans.length === 0 ? (
-          <div className="rounded-2xl bg-white border border-slate-200 py-12 text-center">
-            <Clock className="w-12 h-12 mx-auto text-slate-300 mb-3" />
-            <p className="text-slate-500">暂无稍后提醒</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {snoozedPlans.map((plan, idx) => {
-            const snoozePatient = getPatientById(plan.patientId);
-            const remindTime = plan.remindAt ? formatDate(new Date(plan.remindAt), 'time') : null;
-            if (!snoozePatient) return null;
-            return (
-              <div key={plan.id} style={{ animationDelay: `${idx * 40}ms` }} className="animate-[fadeInUp_0.4s_ease">
-                <div
-                  onClick={() => openDrawer(plan)}
-                  className="group relative overflow-hidden rounded-xl bg-white border border-indigo-100 bg-indigo-50/30 cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5"
-                >
-                  <div className="absolute left-0 top-0 bottom-0 w-1 rounded-l-xl bg-indigo-400" />
-                  <div className="flex items-center gap-4 p-4 pl-5">
-                    <div className="flex-shrink-0">
-                      <div className={cn(
-                        'w-12 h-12 rounded-full bg-gradient-to-br flex items-center justify-center',
-                        snoozePatient.gender === 'female' ? 'from-pink-100 to-pink-200' : 'from-blue-100 to-blue-200'
-                      )}>
-                        <User className="w-6 h-6 text-slate-600" />
-                      </div>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="font-semibold text-slate-800">{snoozePatient.name}</h3>
-                        <span className="px-1.5 py-0.5 rounded-md text-xs font-medium border bg-purple-50 text-purple-700 border-purple-100">
-                          {getTreatmentLabel(plan.treatmentType)}
-                        </span>
-                        <span className="px-2 py-0.5 rounded-md text-xs font-medium border bg-indigo-50 text-indigo-700 border-indigo-100">
-                          {getPriorityLabel(plan.priority)}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-4 mt-1.5 text-sm text-slate-600">
-                        <span className="font-medium text-blue-600">{getDayStageLabel(plan.daysAfterSurgery)}</span>
-                        <span className="flex items-center gap-1 text-slate-500">
-                          <Phone className="w-3.5 h-3.5" />
-                          {snoozePatient.phone}
-                        </span>
-                        {plan.delayedTimes && plan.delayedTimes > 0 && (
-                          <span className="flex items-center gap-1 text-xs text-amber-600 font-medium">
-                            <RefreshCw className="w-3.5 h-3.5" />
-                            已延后 {plan.delayedTimes} 次
+        <div>
+          <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2 mb-3">
+            <BellRing className="w-5 h-5 text-indigo-600" />
+            稍后提醒
+            <span className="text-sm font-normal text-slate-400">({snoozedPlans.length})</span>
+          </h2>
+          {snoozedPlans.length === 0 ? (
+            <div className="rounded-2xl bg-white border border-slate-200 py-12 text-center">
+              <Clock className="w-12 h-12 mx-auto text-slate-300 mb-3" />
+              <p className="text-slate-500">暂无稍后提醒</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {snoozedPlans.map((plan, idx) => {
+                const snoozePatient = getPatientById(plan.patientId);
+                const remindTime = plan.remindAt ? formatDate(new Date(plan.remindAt), 'time') : null;
+                if (!snoozePatient) return null;
+                return (
+                  <div key={plan.id} style={{ animationDelay: `${idx * 40}ms` }} className="animate-[fadeInUp_0.4s_ease">
+                    <div
+                      onClick={() => openDrawer(plan)}
+                      className="group relative overflow-hidden rounded-xl bg-white border border-indigo-100 bg-indigo-50/30 cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5"
+                    >
+                      <div className="absolute left-0 top-0 bottom-0 w-1 rounded-l-xl bg-indigo-400" />
+                      <div className="flex items-center gap-4 p-4 pl-5">
+                        <div className="flex-shrink-0">
+                          <div className={cn(
+                            'w-12 h-12 rounded-full bg-gradient-to-br flex items-center justify-center',
+                            snoozePatient.gender === 'female' ? 'from-pink-100 to-pink-200' : 'from-blue-100 to-blue-200'
+                          )}>
+                            <User className="w-6 h-6 text-slate-600" />
+                          </div>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h3 className="font-semibold text-slate-800">{snoozePatient.name}</h3>
+                            <span className="px-1.5 py-0.5 rounded-md text-xs font-medium border bg-purple-50 text-purple-700 border-purple-100">
+                              {getTreatmentLabel(plan.treatmentType)}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md text-xs font-medium border bg-indigo-50 text-indigo-700 border-indigo-100">
+                              {getPriorityLabel(plan.priority)}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-4 mt-1.5 text-sm text-slate-600">
+                            <span className="font-medium text-blue-600">{getDayStageLabel(plan.daysAfterSurgery)}</span>
+                            <span className="flex items-center gap-1 text-slate-500">
+                              <Phone className="w-3.5 h-3.5" />
+                              {snoozePatient.phone}
+                            </span>
+                            {plan.delayedTimes && plan.delayedTimes > 0 && (
+                              <span className="flex items-center gap-1 text-xs text-amber-600 font-medium">
+                                <RefreshCw className="w-3.5 h-3.5" />
+                                已延后 {plan.delayedTimes} 次
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-lg">
+                          <Clock className="w-4 h-4" />
+                          <span className="font-bold text-lg">
+                            {remindTime}
                           </span>
-                        )}
+                        </div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-lg">
-                      <Clock className="w-4 h-4" />
-                      <span className="font-bold text-lg">
-                        {remindTime}
-                      </span>
-                    </div>
                   </div>
-                </div>
-              </div>
-            );
-          })}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
-    </div>
 
       {batchMode && (
         <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 shadow-2xl z-40">
           <div className="max-w-7xl mx-auto px-6 py-4">
-            {batchSortedPlans.length === 0 ? (
+            {allBatchCompleted ? (
+              <div className="text-center py-4">
+                <div className="flex items-center justify-center gap-2 text-emerald-600">
+                  <CheckCircle2 className="w-6 h-6" />
+                  <span className="text-lg font-bold">今日队列已完成</span>
+                </div>
+                <p className="mt-1 text-sm text-slate-500">所有待回访患者已处理完毕，辛苦了！</p>
+                <button
+                  onClick={handleExitBatchMode}
+                  className="mt-3 px-4 h-9 rounded-lg text-sm font-medium border-2 border-red-500 text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  退出批量模式
+                </button>
+              </div>
+            ) : batchSortedPlans.length === 0 ? (
               <div className="text-center text-slate-500 py-4">
                 <p className="text-sm">暂无待回访患者可用于批量拨打</p>
               </div>
             ) : (
               <>
+                {batchNoteExpanded && (
+                  <div className="mb-4 border-b border-slate-100 pb-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium text-slate-700 flex items-center gap-1.5">
+                        <Mic className="w-4 h-4 text-blue-500" />
+                        通话笔记
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleInsertTemplate}
+                          className="px-2.5 h-7 rounded-md text-xs font-medium bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors flex items-center gap-1"
+                        >
+                          <FileText className="w-3 h-3" />
+                          插入话术
+                        </button>
+                        <button
+                          onClick={() => setBatchNoteExpanded(false)}
+                          className="text-slate-400 hover:text-slate-600"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                    <textarea
+                      ref={notesRef}
+                      value={batchNote}
+                      onChange={(e) => setBatchNote(e.target.value)}
+                      placeholder="通话过程中记录的内容会随回访结果一起保存..."
+                      className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none"
+                      rows={3}
+                    />
+                  </div>
+                )}
+
                 <div className="flex items-center justify-between gap-4">
                   <div className="flex items-center gap-4">
                     <div className="text-sm font-medium text-slate-600">
-                      {batchIndex + 1} / {batchSortedPlans.length}
+                      {currentUnprocessedIndex + 1} / {unprocessedBatchPlans.length}
+                      <span className="text-xs text-slate-400 ml-1">(共{batchSortedPlans.length}条)</span>
                     </div>
                     <button
                       onClick={handlePrevPatient}
-                      disabled={batchIndex === 0}
+                      disabled={!canGoPrev}
                       className="w-10 h-10 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                     >
                       <ChevronLeft className="w-5 h-5" />
                     </button>
                     <button
                       onClick={handleNextPatient}
-                      disabled={batchIndex === batchSortedPlans.length - 1}
+                      disabled={!canGoNext}
                       className="w-10 h-10 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                     >
                       <ChevronRight className="w-5 h-5" />
                     </button>
+                    {!batchNoteExpanded && (
+                      <button
+                        onClick={() => setBatchNoteExpanded(true)}
+                        className="flex items-center gap-1.5 px-3 h-9 rounded-lg text-sm font-medium bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
+                      >
+                        <Mic className="w-4 h-4" />
+                        笔记
+                      </button>
+                    )}
                   </div>
 
-                  {currentBatchPatientData && (
+                  {currentBatchPatientData && currentBatchPlan && (
                     <div className="flex items-center gap-6">
                       <div className="text-right">
                         <div className="font-bold text-slate-800 text-lg">{currentBatchPatientData.name}</div>
                         <div className="text-sm text-slate-500">
                           {getGenderLabel(currentBatchPatientData.gender)} · {currentBatchPatientData.age}岁
                           <span className="mx-2 text-slate-300">·</span>
-                          {getTreatmentLabel(currentBatchPatient.treatmentType)}
+                          {getTreatmentLabel(currentBatchPlan.treatmentType)}
                         </div>
                       </div>
                       <a
@@ -535,6 +815,12 @@ export default function TodayList() {
                     >
                       <AlertTriangle className="w-4 h-4" />
                       需复核
+                    </button>
+                    <button
+                      onClick={handleExitBatchMode}
+                      className="px-4 py-2.5 rounded-xl border-2 border-red-500 text-red-600 font-medium hover:bg-red-50 transition-colors"
+                    >
+                      退出
                     </button>
                   </div>
                 </div>

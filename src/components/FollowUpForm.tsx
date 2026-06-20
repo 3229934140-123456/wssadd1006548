@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { CheckCircle2, AlertTriangle, CalendarCheck, Clock, AlertCircle, Check } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, CalendarCheck, Clock, AlertCircle, Check, MessageSquare, ChevronDown } from 'lucide-react';
 import { cn } from '@/utils/helpers';
-import type { Symptoms, ResultStatus, FollowUpPlan } from '@/types';
+import type { Symptoms, ResultStatus, FollowUpPlan, TreatmentType } from '@/types';
 import { useAppStore } from '@/store/useAppStore';
 
 interface FollowUpFormProps {
@@ -23,9 +23,16 @@ const resultOptions: { value: ResultStatus; label: string; desc: string; icon: a
   { value: 'rebook', label: '预约复诊', desc: '需要安排回院检查', icon: CalendarCheck, color: 'text-blue-700', bg: 'bg-blue-50', border: 'border-blue-200' }
 ];
 
+const templateOptions: { value: TreatmentType; label: string }[] = [
+  { value: 'implant', label: '种植牙术后' },
+  { value: 'extraction', label: '拔牙术后' },
+  { value: 'root_canal', label: '根管治疗后' }
+];
+
 export default function FollowUpForm({ plan, onSubmit, onDelay }: FollowUpFormProps) {
   const completeFollowUp = useAppStore(s => s.completeFollowUp);
   const delayFollowUp = useAppStore(s => s.delayFollowUp);
+  const getPhoneTemplate = useAppStore(s => s.getPhoneTemplate);
 
   const [symptoms, setSymptoms] = useState<Symptoms>({
     pain: false, swelling: false, bleeding: false, medication: true, other: ''
@@ -34,9 +41,20 @@ export default function FollowUpForm({ plan, onSubmit, onDelay }: FollowUpFormPr
   const [notes, setNotes] = useState('');
   const [doctorQuestion, setDoctorQuestion] = useState('');
   const [showDelayMenu, setShowDelayMenu] = useState(false);
+  const [showTemplateMenu, setShowTemplateMenu] = useState(false);
 
   const toggleSymptom = (key: keyof Omit<Symptoms, 'other'>) => {
     setSymptoms(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const insertTemplate = (treatmentType: TreatmentType) => {
+    const template = getPhoneTemplate(treatmentType);
+    if (!notes) {
+      setNotes(template);
+    } else {
+      setNotes(prev => prev + '\n\n---\n\n' + template);
+    }
+    setShowTemplateMenu(false);
   };
 
   const handleSubmit = () => {
@@ -164,10 +182,53 @@ export default function FollowUpForm({ plan, onSubmit, onDelay }: FollowUpFormPr
       )}
 
       <div>
-        <h3 className="text-sm font-semibold text-slate-800 mb-3 flex items-center gap-2">
-          <span className="w-1 h-4 rounded-full bg-blue-600" />
-          沟通备注
+        <h3 className="text-sm font-semibold text-slate-800 mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="w-1 h-4 rounded-full bg-blue-600" />
+            沟通备注
+          </div>
+          <button
+            type="button"
+            onClick={() => insertTemplate(plan.treatmentType)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            插入模板
+          </button>
         </h3>
+
+        <div className="mb-3">
+          <p className="text-xs font-medium text-slate-600 mb-2">常用话术模板</p>
+          <div className="relative inline-block">
+            <button
+              type="button"
+              onClick={() => setShowTemplateMenu(!showTemplateMenu)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all"
+            >
+              <MessageSquare className="w-4 h-4 text-slate-500" />
+              插入话术模板
+              <ChevronDown className={cn('w-3.5 h-3.5 text-slate-400 transition-transform', showTemplateMenu && 'rotate-180')} />
+            </button>
+            {showTemplateMenu && (
+              <div className="absolute top-full left-0 mt-1 w-48 bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden z-10 animate-[fadeIn_0.15s_ease]">
+                {templateOptions.map(opt => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => insertTemplate(opt.value)}
+                    className={cn(
+                      'w-full px-3 py-2.5 text-left text-sm hover:bg-slate-50 transition-colors border-b border-slate-100 last:border-b-0',
+                      plan.treatmentType === opt.value ? 'text-blue-600 bg-blue-50/50' : 'text-slate-700'
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
         <textarea
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
