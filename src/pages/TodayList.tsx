@@ -47,8 +47,7 @@ export default function TodayList() {
   const [selectedPlan, setSelectedPlan] = useState<FollowUpPlan | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
-  const [batchIndex, setBatchIndex] = useState(0);
-  const [completedBatchPlanIds, setCompletedBatchPlanIds] = useState<Set<string>>(new Set());
+  const [batchQueueIndex, setBatchQueueIndex] = useState(0);
   const [batchNote, setBatchNote] = useState('');
   const [batchNoteExpanded, setBatchNoteExpanded] = useState(false);
   const [contactingRebookId, setContactingRebookId] = useState<string | null>(null);
@@ -111,23 +110,11 @@ export default function TodayList() {
     return getSnoozedPlans();
   }, [getSnoozedPlans]);
 
-  const batchSortedPlans = useMemo(() => {
-    return [...displayedPendingPlans].sort((a, b) => {
-      const pDiff = priorityOrder[a.priority] - priorityOrder[b.priority];
-      if (pDiff !== 0) return pDiff;
-      const isOverdueA = a.scheduledDate < today ? 0 : 1;
-      const isOverdueB = b.scheduledDate < today ? 0 : 1;
-      return isOverdueA - isOverdueB;
-    });
-  }, [displayedPendingPlans, today]);
-
-  const unprocessedBatchPlans = useMemo(() => {
-    return batchSortedPlans.filter(p => !completedBatchPlanIds.has(p.id));
-  }, [batchSortedPlans, completedBatchPlanIds]);
-
-  const currentBatchPlan = unprocessedBatchPlans[batchIndex] || unprocessedBatchPlans[0] || null;
+  const batchQueue = displayedPendingPlans;
+  const safeIndex = Math.min(batchQueueIndex, Math.max(0, batchQueue.length - 1));
+  const currentBatchPlan = batchQueue.length > 0 ? batchQueue[safeIndex] : null;
   const currentBatchPatientData = currentBatchPlan ? getPatientById(currentBatchPlan.patientId) : null;
-  const allBatchCompleted = unprocessedBatchPlans.length === 0 && batchSortedPlans.length > 0;
+  const allBatchCompleted = batchMode && batchQueue.length === 0;
 
   const openDrawer = (plan: FollowUpPlan) => {
     setSelectedPlan(plan);
@@ -169,115 +156,76 @@ export default function TodayList() {
     setRebookDialogAction('contacted');
   };
 
-  const findNextUnprocessedIndex = () => {
-    const currentId = currentBatchPlan?.id;
-    const remaining = unprocessedBatchPlans.filter(p => p.id !== currentId);
-    if (remaining.length === 0) {
-      return -1;
-    }
-    const nextPlan = remaining[0];
-    return batchSortedPlans.findIndex(p => p.id === nextPlan.id);
-  };
-
   const handleBatchMissedCall = () => {
-    if (currentBatchPlan) {
-      const currentId = currentBatchPlan.id;
-      delayFollowUp(currentBatchPlan.id, '2h');
-      setCompletedBatchPlanIds(prev => new Set([...prev, currentId]));
-      const nextIdx = findNextUnprocessedIndex();
-      if (nextIdx >= 0) {
-        setBatchIndex(nextIdx);
-      }
-      setBatchNote('');
-    }
+    if (!currentBatchPlan) return;
+    delayFollowUp(currentBatchPlan.id, '2h');
+    setBatchNote('');
+    setBatchNoteExpanded(false);
   };
 
   const handleBatchNormal = () => {
-    if (currentBatchPlan) {
-      const currentId = currentBatchPlan.id;
-      completeFollowUp({
-        planId: currentBatchPlan.id,
-        symptoms: { pain: false, swelling: false, bleeding: false, medication: true, other: '' },
-        resultStatus: 'normal',
-        notes: batchNote || '批量拨打 - 患者恢复正常',
-        contactSuccess: true
-      });
-      setCompletedBatchPlanIds(prev => new Set([...prev, currentId]));
-      const nextIdx = findNextUnprocessedIndex();
-      if (nextIdx >= 0) {
-        setBatchIndex(nextIdx);
-      }
-      setBatchNote('');
-    }
+    if (!currentBatchPlan) return;
+    completeFollowUp({
+      planId: currentBatchPlan.id,
+      symptoms: { pain: false, swelling: false, bleeding: false, medication: true, other: '' },
+      resultStatus: 'normal',
+      notes: batchNote || '批量拨打 - 患者恢复正常',
+      contactSuccess: true
+    });
+    setBatchNote('');
+    setBatchNoteExpanded(false);
   };
 
   const handleBatchNeedReview = () => {
-    if (currentBatchPlan) {
-      const currentId = currentBatchPlan.id;
-      completeFollowUp({
-        planId: currentBatchPlan.id,
-        symptoms: { pain: false, swelling: false, bleeding: false, medication: false, other: '' },
-        resultStatus: 'need_review',
-        notes: batchNote || '批量拨打 - 需医生复核',
-        contactSuccess: true,
-        doctorQuestion: batchNote || '批量拨打标记需复核'
-      });
-      setCompletedBatchPlanIds(prev => new Set([...prev, currentId]));
-      const nextIdx = findNextUnprocessedIndex();
-      if (nextIdx >= 0) {
-        setBatchIndex(nextIdx);
-      }
-      setBatchNote('');
-    }
+    if (!currentBatchPlan) return;
+    completeFollowUp({
+      planId: currentBatchPlan.id,
+      symptoms: { pain: false, swelling: false, bleeding: false, medication: false, other: '' },
+      resultStatus: 'need_review',
+      notes: batchNote || '批量拨打 - 需医生复核',
+      contactSuccess: true,
+      doctorQuestion: batchNote || '批量拨打标记需复核'
+    });
+    setBatchNote('');
+    setBatchNoteExpanded(false);
   };
 
   const handleInsertTemplate = () => {
-    if (currentBatchPlan) {
-      const template = getPhoneTemplate(currentBatchPlan.treatmentType as TreatmentType);
-      setBatchNote(template);
-      setBatchNoteExpanded(true);
-      setTimeout(() => {
-        notesRef.current?.focus();
-      }, 50);
-    }
+    if (!currentBatchPlan) return;
+    const template = getPhoneTemplate(currentBatchPlan.treatmentType as TreatmentType);
+    setBatchNote(template);
+    setBatchNoteExpanded(true);
+    setTimeout(() => {
+      notesRef.current?.focus();
+    }, 50);
   };
 
   const handlePrevPatient = () => {
-    const currentIdxInUnprocessed = unprocessedBatchPlans.findIndex(p => p.id === currentBatchPlan?.id);
-    if (currentIdxInUnprocessed > 0) {
-      const prevPlan = unprocessedBatchPlans[currentIdxInUnprocessed - 1];
-      const idxInSorted = batchSortedPlans.findIndex(p => p.id === prevPlan.id);
-      if (idxInSorted >= 0) {
-        setBatchIndex(idxInSorted);
-        setBatchNote('');
-      }
+    if (safeIndex > 0) {
+      setBatchQueueIndex(safeIndex - 1);
+      setBatchNote('');
+      setBatchNoteExpanded(false);
     }
   };
 
   const handleNextPatient = () => {
-    const currentIdxInUnprocessed = unprocessedBatchPlans.findIndex(p => p.id === currentBatchPlan?.id);
-    if (currentIdxInUnprocessed >= 0 && currentIdxInUnprocessed < unprocessedBatchPlans.length - 1) {
-      const nextPlan = unprocessedBatchPlans[currentIdxInUnprocessed + 1];
-      const idxInSorted = batchSortedPlans.findIndex(p => p.id === nextPlan.id);
-      if (idxInSorted >= 0) {
-        setBatchIndex(idxInSorted);
-        setBatchNote('');
-      }
+    if (safeIndex < batchQueue.length - 1) {
+      setBatchQueueIndex(safeIndex + 1);
+      setBatchNote('');
+      setBatchNoteExpanded(false);
     }
   };
 
   const handleExitBatchMode = () => {
     setBatchMode(false);
-    setBatchIndex(0);
-    setCompletedBatchPlanIds(new Set());
+    setBatchQueueIndex(0);
     setBatchNote('');
     setBatchNoteExpanded(false);
   };
 
   const handleEnterBatchMode = () => {
     setBatchMode(true);
-    setBatchIndex(0);
-    setCompletedBatchPlanIds(new Set());
+    setBatchQueueIndex(0);
     setBatchNote('');
     setBatchNoteExpanded(false);
   };
@@ -289,9 +237,8 @@ export default function TodayList() {
     ? plans.filter(p => p.patientId === patient.id).sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))
     : [];
 
-  const currentUnprocessedIndex = unprocessedBatchPlans.findIndex(p => p.id === currentBatchPlan?.id);
-  const canGoPrev = currentUnprocessedIndex > 0;
-  const canGoNext = currentUnprocessedIndex >= 0 && currentUnprocessedIndex < unprocessedBatchPlans.length - 1;
+  const canGoPrev = safeIndex > 0;
+  const canGoNext = safeIndex < batchQueue.length - 1;
 
   return (
     <div className={cn('space-y-6', batchMode && 'pb-64')}>
@@ -571,13 +518,18 @@ export default function TodayList() {
                                 </button>
                               </div>
                             </div>
-                          ) : task.status === 'pending_contact' && (
+                          ) : (task.status === 'pending_contact' || task.status === 'contacted') && (
                             <button
                               onClick={() => handleRebookContact(task.id)}
-                              className="mt-3 px-4 h-9 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-700 transition-colors flex items-center gap-2"
+                              className={cn(
+                                'mt-3 px-4 h-9 rounded-lg text-sm font-medium transition-colors flex items-center gap-2',
+                                task.status === 'pending_contact'
+                                  ? 'bg-amber-600 text-white hover:bg-amber-700'
+                                  : 'bg-blue-600 text-white hover:bg-blue-700'
+                              )}
                             >
                               <CheckCircle2 className="w-4 h-4" />
-                              已联系
+                              {task.status === 'pending_contact' ? '已联系' : '补充结果'}
                             </button>
                           )}
                         </div>
@@ -698,16 +650,12 @@ export default function TodayList() {
                 <p className="mt-1 text-sm text-slate-500">所有待回访患者已处理完毕，辛苦了！</p>
                 <button
                   onClick={handleExitBatchMode}
-                  className="mt-3 px-4 h-9 rounded-lg text-sm font-medium border-2 border-red-500 text-red-600 hover:bg-red-50 transition-colors"
+                  className="mt-3 px-6 h-10 rounded-lg text-sm font-semibold border-2 border-red-500 text-red-600 hover:bg-red-50 transition-colors"
                 >
                   退出批量模式
                 </button>
               </div>
-            ) : batchSortedPlans.length === 0 ? (
-              <div className="text-center text-slate-500 py-4">
-                <p className="text-sm">暂无待回访患者可用于批量拨打</p>
-              </div>
-            ) : (
+            ) : currentBatchPlan && currentBatchPatientData ? (
               <>
                 {batchNoteExpanded && (
                   <div className="mb-4 border-b border-slate-100 pb-4">
@@ -746,8 +694,7 @@ export default function TodayList() {
                 <div className="flex items-center justify-between gap-4">
                   <div className="flex items-center gap-4">
                     <div className="text-sm font-medium text-slate-600">
-                      {currentUnprocessedIndex + 1} / {unprocessedBatchPlans.length}
-                      <span className="text-xs text-slate-400 ml-1">(共{batchSortedPlans.length}条)</span>
+                      {safeIndex + 1} / {batchQueue.length}
                     </div>
                     <button
                       onClick={handlePrevPatient}
@@ -774,25 +721,23 @@ export default function TodayList() {
                     )}
                   </div>
 
-                  {currentBatchPatientData && currentBatchPlan && (
-                    <div className="flex items-center gap-6">
-                      <div className="text-right">
-                        <div className="font-bold text-slate-800 text-lg">{currentBatchPatientData.name}</div>
-                        <div className="text-sm text-slate-500">
-                          {getGenderLabel(currentBatchPatientData.gender)} · {currentBatchPatientData.age}岁
-                          <span className="mx-2 text-slate-300">·</span>
-                          {getTreatmentLabel(currentBatchPlan.treatmentType)}
-                        </div>
+                  <div className="flex items-center gap-6">
+                    <div className="text-right">
+                      <div className="font-bold text-slate-800 text-lg">{currentBatchPatientData.name}</div>
+                      <div className="text-sm text-slate-500">
+                        {getGenderLabel(currentBatchPatientData.gender)} · {currentBatchPatientData.age}岁
+                        <span className="mx-2 text-slate-300">·</span>
+                        {getTreatmentLabel(currentBatchPlan.treatmentType)}
                       </div>
-                      <a
-                        href={`tel:${currentBatchPatientData.phone}`}
-                        className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 text-white font-bold text-xl shadow-lg shadow-emerald-200 hover:from-emerald-600 hover:to-emerald-700 transition-all"
-                      >
-                        <PhoneCall className="w-6 h-6" />
-                        {currentBatchPatientData.phone}
-                      </a>
                     </div>
-                  )}
+                    <a
+                      href={`tel:${currentBatchPatientData.phone}`}
+                      className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 text-white font-bold text-xl shadow-lg shadow-emerald-200 hover:from-emerald-600 hover:to-emerald-700 transition-all"
+                    >
+                      <PhoneCall className="w-6 h-6" />
+                      {currentBatchPatientData.phone}
+                    </a>
+                  </div>
 
                   <div className="flex items-center gap-3">
                     <button
@@ -825,6 +770,16 @@ export default function TodayList() {
                   </div>
                 </div>
               </>
+            ) : (
+              <div className="text-center py-4">
+                <p className="text-sm text-slate-500">当前筛选条件下没有可拨打的患者</p>
+                <button
+                  onClick={handleExitBatchMode}
+                  className="mt-3 px-6 h-10 rounded-lg text-sm font-semibold border-2 border-red-500 text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  退出批量模式
+                </button>
+              </div>
             )}
           </div>
         </div>
