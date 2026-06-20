@@ -32,6 +32,7 @@ export default function FollowUpForm({ plan, onSubmit, onDelay }: FollowUpFormPr
   });
   const [resultStatus, setResultStatus] = useState<ResultStatus>('normal');
   const [notes, setNotes] = useState('');
+  const [doctorQuestion, setDoctorQuestion] = useState('');
   const [showDelayMenu, setShowDelayMenu] = useState(false);
 
   const toggleSymptom = (key: keyof Omit<Symptoms, 'other'>) => {
@@ -44,7 +45,8 @@ export default function FollowUpForm({ plan, onSubmit, onDelay }: FollowUpFormPr
       symptoms,
       resultStatus,
       notes,
-      contactSuccess: true
+      contactSuccess: true,
+      doctorQuestion: resultStatus === 'need_review' ? doctorQuestion : undefined
     });
     onSubmit?.();
   };
@@ -84,10 +86,7 @@ export default function FollowUpForm({ plan, onSubmit, onDelay }: FollowUpFormPr
                   <opt.icon className={cn('w-4 h-4', active ? opt.color : 'text-slate-500')} />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className={cn(
-                    'text-sm font-medium',
-                    active ? opt.color : 'text-slate-700'
-                  )}>{opt.label}</p>
+                  <p className={cn('text-sm font-medium', active ? opt.color : 'text-slate-700')}>{opt.label}</p>
                 </div>
                 {active && (
                   <div className="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0">
@@ -122,9 +121,7 @@ export default function FollowUpForm({ plan, onSubmit, onDelay }: FollowUpFormPr
                 onClick={() => setResultStatus(opt.value)}
                 className={cn(
                   'w-full flex items-center gap-4 p-4 rounded-xl border-2 transition-all duration-200 text-left',
-                  active
-                    ? `${opt.border} ${opt.bg}`
-                    : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+                  active ? `${opt.border} ${opt.bg}` : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
                 )}
               >
                 <div className={cn(
@@ -134,10 +131,7 @@ export default function FollowUpForm({ plan, onSubmit, onDelay }: FollowUpFormPr
                   <opt.icon className={cn('w-5 h-5', active ? opt.color : 'text-slate-500')} />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className={cn(
-                    'text-sm font-semibold',
-                    active ? opt.color : 'text-slate-800'
-                  )}>{opt.label}</p>
+                  <p className={cn('text-sm font-semibold', active ? opt.color : 'text-slate-800')}>{opt.label}</p>
                   <p className="text-xs text-slate-500 mt-0.5">{opt.desc}</p>
                 </div>
                 <div className={cn(
@@ -151,6 +145,23 @@ export default function FollowUpForm({ plan, onSubmit, onDelay }: FollowUpFormPr
           })}
         </div>
       </div>
+
+      {resultStatus === 'need_review' && (
+        <div className="p-4 rounded-xl border-2 border-amber-200 bg-amber-50/50 animate-[fadeInUp_0.3s_ease]">
+          <h3 className="text-sm font-semibold text-amber-800 mb-2 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4" />
+            给医生的问题摘要
+          </h3>
+          <p className="text-xs text-amber-700 mb-2">请简要描述需要医生关注的问题，方便医生快速了解情况</p>
+          <textarea
+            value={doctorQuestion}
+            onChange={(e) => setDoctorQuestion(e.target.value)}
+            placeholder="例如：患者术后3天仍持续疼痛，止痛药效果不佳，请医生评估是否需要调整用药方案..."
+            className="w-full px-4 py-3 rounded-xl border border-amber-200 text-sm text-slate-700 placeholder:text-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 resize-none"
+            rows={3}
+          />
+        </div>
+      )}
 
       <div>
         <h3 className="text-sm font-semibold text-slate-800 mb-3 flex items-center gap-2">
@@ -174,20 +185,22 @@ export default function FollowUpForm({ plan, onSubmit, onDelay }: FollowUpFormPr
           >
             <Clock className="w-4 h-4" />
             未接听，稍后提醒
+            {plan.delayedTimes ? <span className="text-xs text-slate-400">（已延{plan.delayedTimes}次）</span> : null}
           </button>
           {showDelayMenu && (
             <div className="absolute bottom-full left-0 right-0 mb-2 bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden animate-[fadeIn_0.15s_ease]">
               {[
-                { type: '2h' as const, label: '延后 2 小时' },
-                { type: '4h' as const, label: '延后 4 小时' },
-                { type: 'tomorrow' as const, label: '明天再打' }
+                { type: '2h' as const, label: '延后 2 小时', desc: '2小时后重新提醒' },
+                { type: '4h' as const, label: '延后 4 小时', desc: '4小时后重新提醒' },
+                { type: 'tomorrow' as const, label: '明天再打', desc: '明天出现在待回访列表' }
               ].map(opt => (
                 <button
                   key={opt.type}
                   onClick={() => handleDelay(opt.type)}
-                  className="w-full px-4 py-3 text-sm text-slate-700 text-left hover:bg-slate-50 transition-colors border-b border-slate-100 last:border-b-0"
+                  className="w-full px-4 py-3 text-left hover:bg-slate-50 transition-colors border-b border-slate-100 last:border-b-0"
                 >
-                  {opt.label}
+                  <span className="text-sm font-medium text-slate-700">{opt.label}</span>
+                  <span className="text-xs text-slate-400 ml-2">{opt.desc}</span>
                 </button>
               ))}
             </div>

@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import TodayList from "@/pages/TodayList";
 import NewFollowUp from "@/pages/NewFollowUp";
 import Records from "@/pages/Records";
+import DoctorReview from "@/pages/DoctorReview";
 import TopNav from "@/components/TopNav";
 
 export default function App() {
@@ -13,6 +14,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<TodayList />} />
             <Route path="/new" element={<NewFollowUp />} />
+            <Route path="/review" element={<DoctorReview />} />
             <Route path="/records" element={<Records />} />
           </Routes>
         </main>

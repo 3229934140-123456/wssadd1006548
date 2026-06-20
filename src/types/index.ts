@@ -2,9 +2,11 @@ export type TreatmentType = 'implant' | 'extraction' | 'root_canal';
 
 export type Priority = 'high' | 'medium' | 'low';
 
-export type FollowUpStatus = 'pending' | 'completed' | 'delayed' | 'missed';
+export type FollowUpStatus = 'pending' | 'completed' | 'delayed' | 'snoozed' | 'missed';
 
 export type ResultStatus = 'normal' | 'need_review' | 'rebook';
+
+export type DoctorReviewStatus = 'pending' | 'handled' | 'rebook_suggested';
 
 export interface Patient {
   id: string;
@@ -35,6 +37,7 @@ export interface FollowUpPlan {
   instructions: string;
   contraindications: string;
   delayedTimes?: number;
+  remindAt?: string;
 }
 
 export interface Symptoms {
@@ -56,6 +59,10 @@ export interface FollowUpRecord {
   contactSuccess: boolean;
   followUpDate: string;
   nextFollowUpDate?: string;
+  doctorQuestion?: string;
+  doctorReviewStatus?: DoctorReviewStatus;
+  doctorReviewNote?: string;
+  doctorReviewDate?: string;
 }
 
 export interface AppState {

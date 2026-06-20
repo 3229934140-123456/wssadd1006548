@@ -65,6 +65,7 @@ export function getStatusLabel(status: FollowUpStatus): string {
     pending: '待回访',
     completed: '已完成',
     delayed: '已延后',
+    snoozed: '稍后提醒',
     missed: '未接听'
   };
   return map[status];

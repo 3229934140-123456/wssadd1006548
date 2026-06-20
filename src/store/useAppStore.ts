@@ -1,8 +1,8 @@
 import { create } from 'zustand';
-import type { Patient, Doctor, FollowUpPlan, FollowUpRecord, Symptoms, ResultStatus, TreatmentType } from '@/types';
+import type { Patient, Doctor, FollowUpPlan, FollowUpRecord, Symptoms, ResultStatus, TreatmentType, DoctorReviewStatus } from '@/types';
 import { mockPatients, mockDoctors, mockPlans, mockRecords, defaultCurrentNurse } from '@/data/mockData';
 import { TREATMENT_PRESETS } from '@/data/presets';
-import { generateId, getTodayStr, addDays } from '@/utils/helpers';
+import { generateId, getTodayStr, addDays, formatDate } from '@/utils/helpers';
 
 interface AppStore {
   patients: Patient[];
@@ -30,14 +30,22 @@ interface AppStore {
     resultStatus: ResultStatus;
     notes: string;
     contactSuccess: boolean;
+    doctorQuestion?: string;
   }) => void;
 
   delayFollowUp: (planId: string, delayType: '2h' | '4h' | 'tomorrow') => void;
 
-  getTodayPlans: () => FollowUpPlan[];
+  reviewByDoctor: (recordId: string, params: {
+    reviewStatus: DoctorReviewStatus;
+    reviewNote: string;
+  }) => void;
+
+  getPendingPlans: () => FollowUpPlan[];
+  getOverduePlans: () => FollowUpPlan[];
   getPlansByPatientId: (patientId: string) => FollowUpPlan[];
   getRecordsByPatientId: (patientId: string) => FollowUpRecord[];
   getRecordsByPlanId: (planId: string) => FollowUpRecord | undefined;
+  getPendingReviewRecords: () => FollowUpRecord[];
   searchPlans: (filters?: {
     priority?: string;
     treatmentType?: string;
@@ -49,7 +57,24 @@ interface AppStore {
     keyword?: string;
     treatmentType?: string;
     resultStatus?: string;
+    doctorId?: string;
   }) => FollowUpRecord[];
+  exportRecordsCsv: (filters?: {
+    startDate?: string;
+    endDate?: string;
+    keyword?: string;
+    treatmentType?: string;
+    resultStatus?: string;
+    doctorId?: string;
+  }) => string;
+  getRecordsStats: (filters?: {
+    startDate?: string;
+    endDate?: string;
+    keyword?: string;
+    treatmentType?: string;
+    resultStatus?: string;
+    doctorId?: string;
+  }) => { total: number; normal: number; needReview: number; rebook: number; normalPct: number; needReviewPct: number; rebookPct: number };
 }
 
 const STORAGE_KEY = 'dental-followup-data';
@@ -67,6 +92,17 @@ function saveToStorage(state: Partial<AppStore>) {
     const { patients, doctors, plans, records, currentNurse } = state;
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ patients, doctors, plans, records, currentNurse }));
   } catch {}
+}
+
+function parseDate(dateStr: string): Date {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function daysBetween(a: string, b: string): number {
+  const da = parseDate(a);
+  const db = parseDate(b);
+  return Math.floor((db.getTime() - da.getTime()) / (1000 * 60 * 60 * 24));
 }
 
 export const useAppStore = create<AppStore>((set, get) => {
@@ -124,7 +160,7 @@ export const useAppStore = create<AppStore>((set, get) => {
       return newPlans;
     },
 
-    completeFollowUp: ({ planId, symptoms, resultStatus, notes, contactSuccess }) => {
+    completeFollowUp: ({ planId, symptoms, resultStatus, notes, contactSuccess, doctorQuestion }) => {
       const plan = get().plans.find(p => p.id === planId);
       if (!plan) return;
       const record: FollowUpRecord = {
@@ -136,7 +172,9 @@ export const useAppStore = create<AppStore>((set, get) => {
         notes,
         nurseName: get().currentNurse,
         contactSuccess,
-        followUpDate: getTodayStr()
+        followUpDate: getTodayStr(),
+        doctorQuestion: resultStatus === 'need_review' ? doctorQuestion : undefined,
+        doctorReviewStatus: resultStatus === 'need_review' ? 'pending' : undefined
       };
       set((s) => {
         const plans = s.plans.map(p => p.id === planId ? { ...p, status: 'completed' as const } : p);
@@ -147,18 +185,29 @@ export const useAppStore = create<AppStore>((set, get) => {
     },
 
     delayFollowUp: (planId, delayType) => {
+      const now = new Date();
       set((s) => {
         const plans = s.plans.map(p => {
           if (p.id !== planId) return p;
           let newDate = p.scheduledDate;
+          let remindAt: string | undefined;
+          let newStatus: FollowUpPlan['status'] = 'snoozed';
           if (delayType === 'tomorrow') {
-            const d = addDays(new Date(p.scheduledDate), 1);
+            const d = addDays(now, 1);
             newDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            remindAt = undefined;
+            newStatus = 'pending';
+          } else {
+            const hours = delayType === '2h' ? 2 : 4;
+            const remind = new Date(now.getTime() + hours * 60 * 60 * 1000);
+            remindAt = remind.toISOString();
+            newDate = getTodayStr();
           }
           return {
             ...p,
-            status: 'delayed' as const,
+            status: newStatus,
             scheduledDate: newDate,
+            remindAt,
             delayedTimes: (p.delayedTimes || 0) + 1
           };
         });
@@ -167,9 +216,43 @@ export const useAppStore = create<AppStore>((set, get) => {
       });
     },
 
-    getTodayPlans: () => {
+    reviewByDoctor: (recordId, { reviewStatus, reviewNote }) => {
+      set((s) => {
+        const records = s.records.map(r => {
+          if (r.id !== recordId) return r;
+          return {
+            ...r,
+            doctorReviewStatus: reviewStatus,
+            doctorReviewNote: reviewNote,
+            doctorReviewDate: getTodayStr()
+          };
+        });
+        saveToStorage({ ...s, records });
+        return { records };
+      });
+    },
+
+    getPendingPlans: () => {
       const today = getTodayStr();
-      return get().plans.filter(p => p.scheduledDate === today && p.status !== 'completed');
+      const now = new Date();
+      return get().plans.filter(p => {
+        if (p.status === 'completed') return false;
+        if (p.status === 'snoozed') {
+          if (p.remindAt) {
+            return new Date(p.remindAt) <= now;
+          }
+          return p.scheduledDate <= today;
+        }
+        return p.scheduledDate <= today;
+      });
+    },
+
+    getOverduePlans: () => {
+      const today = getTodayStr();
+      return get().plans.filter(p => {
+        if (p.status === 'completed') return false;
+        return p.scheduledDate < today && p.status !== 'snoozed';
+      });
     },
 
     getPlansByPatientId: (patientId) =>
@@ -184,6 +267,11 @@ export const useAppStore = create<AppStore>((set, get) => {
 
     getRecordsByPlanId: (planId) => get().records.find(r => r.planId === planId),
 
+    getPendingReviewRecords: () =>
+      get().records
+        .filter(r => r.resultStatus === 'need_review' && r.doctorReviewStatus === 'pending')
+        .sort((a, b) => b.followUpDate.localeCompare(a.followUpDate)),
+
     searchPlans: (filters) => {
       let result = [...get().plans];
       if (!filters) return result;
@@ -195,7 +283,6 @@ export const useAppStore = create<AppStore>((set, get) => {
         result = result.filter(p => p.treatmentType === treatmentType);
       }
       if (keyword) {
-        const kw = keyword.toLowerCase();
         const matchedPatientIds = get().patients
           .filter(p => p.name.includes(keyword) || p.phone.includes(keyword))
           .map(p => p.id);
@@ -207,15 +294,10 @@ export const useAppStore = create<AppStore>((set, get) => {
     searchRecords: (filters) => {
       let result = [...get().records];
       if (!filters) return result;
-      const { startDate, endDate, keyword, treatmentType, resultStatus } = filters;
-      if (startDate) {
-        result = result.filter(r => r.followUpDate >= startDate);
-      }
-      if (endDate) {
-        result = result.filter(r => r.followUpDate <= endDate);
-      }
+      const { startDate, endDate, keyword, treatmentType, resultStatus, doctorId } = filters;
+      if (startDate) result = result.filter(r => r.followUpDate >= startDate);
+      if (endDate) result = result.filter(r => r.followUpDate <= endDate);
       if (keyword) {
-        const kw = keyword.toLowerCase();
         const matchedPatientIds = get().patients
           .filter(p => p.name.includes(keyword) || p.phone.includes(keyword))
           .map(p => p.id);
@@ -230,7 +312,63 @@ export const useAppStore = create<AppStore>((set, get) => {
       if (resultStatus && resultStatus !== 'all') {
         result = result.filter(r => r.resultStatus === resultStatus);
       }
+      if (doctorId && doctorId !== 'all') {
+        const matchedPlanIds = get().plans
+          .filter(p => p.doctorId === doctorId)
+          .map(p => p.id);
+        result = result.filter(r => matchedPlanIds.includes(r.planId));
+      }
       return result.sort((a, b) => b.followUpDate.localeCompare(a.followUpDate));
+    },
+
+    exportRecordsCsv: (filters) => {
+      const { getPatientById, getDoctorById, plans } = get();
+      const records = get().searchRecords(filters);
+      const headers = ['患者姓名', '性别', '年龄', '电话', '治疗项目', '回访阶段', '回访日期', '疼痛', '肿胀', '出血', '按时用药', '其他症状', '回访结果', '沟通备注', '操作护士', '医生复核状态'];
+      const rows = records.map(r => {
+        const p = getPatientById(r.patientId);
+        const pl = plans.find(pp => pp.id === r.planId);
+        const dr = pl ? getDoctorById(pl.doctorId) : null;
+        return [
+          p?.name || '',
+          p ? (p.gender === 'male' ? '男' : '女') : '',
+          p?.age || '',
+          p?.phone || '',
+          pl ? (pl.treatmentType === 'implant' ? '种植牙' : pl.treatmentType === 'extraction' ? '拔牙' : '根管治疗') : '',
+          pl ? `术后第${pl.daysAfterSurgery || '当天'}` : '',
+          r.followUpDate,
+          r.symptoms.pain ? '是' : '否',
+          r.symptoms.swelling ? '是' : '否',
+          r.symptoms.bleeding ? '是' : '否',
+          r.symptoms.medication ? '是' : '否',
+          r.symptoms.other || '',
+          r.resultStatus === 'normal' ? '恢复正常' : r.resultStatus === 'need_review' ? '需医生复核' : '预约复诊',
+          (r.notes || '').replace(/"/g, '""'),
+          r.nurseName,
+          r.doctorReviewStatus === 'handled' ? '已处理' : r.doctorReviewStatus === 'rebook_suggested' ? '建议复诊' : r.doctorReviewStatus === 'pending' ? '待复核' : '-'
+        ].map(v => `"${v}"`);
+      });
+      const BOM = '\uFEFF';
+      return BOM + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    },
+
+    getRecordsStats: (filters) => {
+      const recs = get().searchRecords(filters);
+      const total = recs.length;
+      const normal = recs.filter(r => r.resultStatus === 'normal').length;
+      const needReview = recs.filter(r => r.resultStatus === 'need_review').length;
+      const rebook = recs.filter(r => r.resultStatus === 'rebook').length;
+      return {
+        total,
+        normal,
+        needReview,
+        rebook,
+        normalPct: total > 0 ? Math.round(normal / total * 100) : 0,
+        needReviewPct: total > 0 ? Math.round(needReview / total * 100) : 0,
+        rebookPct: total > 0 ? Math.round(rebook / total * 100) : 0
+      };
     }
   };
 });
+
+export { daysBetween };

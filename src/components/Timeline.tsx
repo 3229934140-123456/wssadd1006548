@@ -18,7 +18,16 @@ const statusDots = {
   pending: '',
   completed: '!bg-emerald-500 !ring-emerald-100',
   delayed: '!bg-violet-500 !ring-violet-100',
+  snoozed: '!bg-indigo-500 !ring-indigo-100',
   missed: '!bg-slate-300'
+};
+
+const statusLabels: Record<string, string> = {
+  pending: '',
+  completed: '已完成',
+  delayed: '已延后',
+  snoozed: '稍后提醒',
+  missed: '已错过'
 };
 
 export default function Timeline({ plans, highlightToday = false }: TimelineProps) {
@@ -47,6 +56,8 @@ export default function Timeline({ plans, highlightToday = false }: TimelineProp
                 {plan.status === 'completed' ? (
                   <CheckCircle2 className="w-5 h-5 text-white" />
                 ) : plan.status === 'delayed' ? (
+                  <Clock className="w-5 h-5 text-white" />
+                ) : plan.status === 'snoozed' ? (
                   <Clock className="w-5 h-5 text-white" />
                 ) : (
                   <Calendar className="w-5 h-5 text-white" />
@@ -90,6 +101,16 @@ export default function Timeline({ plans, highlightToday = false }: TimelineProp
                     {plan.status === 'completed' && (
                       <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 text-xs font-medium border border-emerald-100">
                         已完成
+                      </span>
+                    )}
+                    {plan.status === 'snoozed' && (
+                      <span className="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 text-xs font-medium border border-indigo-100">
+                        稍后提醒
+                      </span>
+                    )}
+                    {plan.status === 'delayed' && (
+                      <span className="px-2 py-0.5 rounded-md bg-violet-50 text-violet-700 text-xs font-medium border border-violet-100">
+                        已延后
                       </span>
                     )}
                   </div>

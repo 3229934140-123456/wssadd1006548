@@ -1,15 +1,17 @@
 import { NavLink, useLocation } from 'react-router-dom';
-import { CalendarDays, PlusCircle, FileText, User, Stethoscope } from 'lucide-react';
+import { CalendarDays, PlusCircle, FileText, User, Stethoscope, ClipboardCheck } from 'lucide-react';
 import { cn } from '@/utils/helpers';
 import { useAppStore } from '@/store/useAppStore';
 
 export default function TopNav() {
   const location = useLocation();
   const currentNurse = useAppStore(s => s.currentNurse);
+  const pendingReviewCount = useAppStore(s => s.getPendingReviewRecords().length);
 
   const navItems = [
-    { path: '/', label: '今日待回访', icon: CalendarDays, badge: useAppStore.getState().getTodayPlans().length },
+    { path: '/', label: '今日待回访', icon: CalendarDays, badge: useAppStore.getState().getPendingPlans().length },
     { path: '/new', label: '新增回访', icon: PlusCircle },
+    { path: '/review', label: '医生复核', icon: ClipboardCheck, badge: pendingReviewCount },
     { path: '/records', label: '回访记录', icon: FileText }
   ];
 

@@ -36,8 +36,17 @@ function createPlans(): FollowUpPlan[] {
     preset.defaultDays.forEach((day, idx) => {
       const schedDate = makeDateStr(surgeryOffset + day);
       let status: any = 'pending';
+      let remindAt: string | undefined;
       if (schedDate < today) status = 'completed';
-      if (schedDate === today && idx % 3 === 1) status = 'delayed';
+      if (schedDate === today && idx % 3 === 1) {
+        status = 'delayed';
+      }
+      if (schedDate === today && idx % 3 === 2) {
+        const snoozeTime = new Date();
+        snoozeTime.setHours(snoozeTime.getHours() + 2);
+        remindAt = snoozeTime.toISOString();
+        status = 'snoozed';
+      }
       plans.push({
         id: generateId(),
         patientId,
@@ -50,7 +59,8 @@ function createPlans(): FollowUpPlan[] {
         createdAt: new Date().toISOString(),
         instructions: preset.defaultInstructions,
         contraindications: preset.defaultContraindications,
-        delayedTimes: idx % 3 === 1 ? 1 : 0
+        delayedTimes: idx % 3 === 1 ? 1 : idx % 3 === 2 ? 2 : 0,
+        remindAt
       });
     });
   }
@@ -100,6 +110,34 @@ export const mockRecords: FollowUpRecord[] = [
     nurseName: '王护士',
     contactSuccess: true,
     followUpDate: makeDateStr(-4)
+  },
+  {
+    id: generateId(),
+    planId: mockPlans.find(p => p.patientId === 'p4' && p.daysAfterSurgery === 3)?.id || 'r4',
+    patientId: 'p4',
+    symptoms: { pain: true, swelling: true, bleeding: false, medication: true, other: '种植体周围有轻微红肿' },
+    resultStatus: 'need_review',
+    notes: '患者反馈种植区域仍有持续疼痛和肿胀，已持续3天未见明显好转。',
+    nurseName: '林护士',
+    contactSuccess: true,
+    followUpDate: makeDateStr(0),
+    doctorQuestion: '种植术后3天仍有明显疼痛和肿胀，是否需要安排患者提前复诊检查？',
+    doctorReviewStatus: 'pending'
+  },
+  {
+    id: generateId(),
+    planId: mockPlans.find(p => p.patientId === 'p6' && p.daysAfterSurgery === 0)?.id || 'r5',
+    patientId: 'p6',
+    symptoms: { pain: true, swelling: false, bleeding: true, medication: true, other: '' },
+    resultStatus: 'need_review',
+    notes: '根管治疗后当天有出血情况，疼痛较明显。',
+    nurseName: '王护士',
+    contactSuccess: true,
+    followUpDate: makeDateStr(-2),
+    doctorQuestion: '根管治疗术后出血不止，是否需要加压止血或回院处理？',
+    doctorReviewStatus: 'handled',
+    doctorReviewNote: '已电话指导患者咬棉球加压30分钟，如持续出血请立即来院。',
+    doctorReviewDate: makeDateStr(-2)
   }
 ];
 
