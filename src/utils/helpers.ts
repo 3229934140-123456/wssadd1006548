@@ -1,4 +1,4 @@
-import type { TreatmentType, Priority, FollowUpStatus, ResultStatus } from '@/types';
+import type { TreatmentType, Priority, FollowUpStatus, ResultStatus, RebookTaskStatus } from '@/types';
 
 export function formatDate(date: Date | string, format: 'full' | 'date' | 'time' = 'full'): string {
   const d = typeof date === 'string' ? new Date(date) : date;
@@ -88,6 +88,16 @@ export function getDayStageLabel(days: number): string {
   if (days === 0) return '术后当天';
   if (days === 1) return '术后第1天';
   return `术后第${days}天`;
+}
+
+export function getRebookStatusLabel(status: RebookTaskStatus): string {
+  const map: Record<RebookTaskStatus, string> = {
+    pending_contact: '待联系',
+    contacted: '已联系',
+    confirmed: '已确认',
+    cancelled: '已取消'
+  };
+  return map[status];
 }
 
 export function cn(...classes: (string | boolean | undefined | null)[]): string {

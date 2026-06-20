@@ -1,4 +1,4 @@
-import type { Patient, Doctor, FollowUpPlan, FollowUpRecord } from '@/types';
+import type { Patient, Doctor, FollowUpPlan, FollowUpRecord, RebookTask } from '@/types';
 import { addDays, generateId, getTodayStr } from '@/utils/helpers';
 import { TREATMENT_PRESETS } from '@/data/presets';
 
@@ -140,5 +140,39 @@ export const mockRecords: FollowUpRecord[] = [
     doctorReviewDate: makeDateStr(-2)
   }
 ];
+
+export const mockRebookTasks: RebookTask[] = (() => {
+  const getPlanId = (patientId: string, daysAfterSurgery: number) =>
+    mockPlans.find(p => p.patientId === patientId && p.daysAfterSurgery === daysAfterSurgery)?.id || '';
+  const getRecordId = (patientId: string, planDays: number) =>
+    mockRecords.find(r => r.patientId === patientId && r.planId === getPlanId(patientId, planDays))?.id || '';
+
+  return [
+    {
+      id: 'rt1',
+      recordId: mockRecords.find(r => r.patientId === 'p6')?.id || 'r5',
+      patientId: 'p6',
+      doctorId: 'd3',
+      treatmentType: 'root_canal',
+      doctorNote: '建议患者回院拍摄X光片检查根管充填情况，如仍有持续疼痛需考虑重新治疗。',
+      status: 'pending_contact',
+      createdAt: new Date(Date.now() - 86400000).toISOString(),
+      createdBy: '王护士'
+    },
+    {
+      id: 'rt2',
+      recordId: getRecordId('p5', 3),
+      patientId: 'p5',
+      doctorId: 'd2',
+      treatmentType: 'extraction',
+      doctorNote: '患者拔牙后伤口愈合良好，建议一周后复诊拆线并检查伤口情况。',
+      status: 'contacted',
+      nurseNote: '已联系患者，预约下周一上午复诊拆线',
+      contactDate: makeDateStr(0),
+      createdAt: new Date(Date.now() - 172800000).toISOString(),
+      createdBy: '林护士'
+    }
+  ];
+})();
 
 export const defaultCurrentNurse = '林护士';

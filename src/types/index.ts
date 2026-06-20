@@ -8,6 +8,8 @@ export type ResultStatus = 'normal' | 'need_review' | 'rebook';
 
 export type DoctorReviewStatus = 'pending' | 'handled' | 'rebook_suggested';
 
+export type RebookTaskStatus = 'pending_contact' | 'contacted' | 'confirmed' | 'cancelled';
+
 export interface Patient {
   id: string;
   name: string;
@@ -65,10 +67,37 @@ export interface FollowUpRecord {
   doctorReviewDate?: string;
 }
 
+export interface RebookTask {
+  id: string;
+  recordId: string;
+  patientId: string;
+  doctorId: string;
+  treatmentType: TreatmentType;
+  doctorNote: string;
+  status: RebookTaskStatus;
+  nurseNote?: string;
+  contactDate?: string;
+  createdAt: string;
+  createdBy: string;
+}
+
 export interface AppState {
   patients: Patient[];
   doctors: Doctor[];
   plans: FollowUpPlan[];
   records: FollowUpRecord[];
+  rebookTasks: RebookTask[];
   currentNurse: string;
+}
+
+export interface SummaryRow {
+  doctorId: string;
+  doctorName: string;
+  department: string;
+  treatmentType: TreatmentType;
+  totalCompleted: number;
+  normal: number;
+  needReview: number;
+  reviewHandled: number;
+  rebookSuggested: number;
 }

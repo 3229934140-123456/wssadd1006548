@@ -185,9 +185,9 @@ export default function DoctorReview() {
                     <div className={cn('w-10 h-10 rounded-xl flex items-center justify-center', reviewStatus === 'handled' ? 'bg-emerald-100' : 'bg-slate-100')}><CheckCircle2 className={cn('w-5 h-5', reviewStatus === 'handled' ? 'text-emerald-700' : 'text-slate-500')} /></div>
                     <div><p className={cn('text-sm font-semibold', reviewStatus === 'handled' ? 'text-emerald-700' : 'text-slate-800')}>已处理</p><p className="text-xs text-slate-500">无需进一步处理</p></div>
                   </button>
-                  <button onClick={() => setReviewStatus('rebook_suggested')} className={cn('w-full flex items-center gap-4 p-4 rounded-xl border-2 transition-all text-left', reviewStatus === 'rebook_suggested' ? 'border-blue-300 bg-blue-50' : 'border-slate-200 hover:border-slate-300')}>
+                  <button onClick={() => setReviewStatus('rebook_suggested')} className={cn('w-full flex items-center gap-4 p-4 rounded-xl border-2 transition-all text-left relative', reviewStatus === 'rebook_suggested' ? 'border-blue-300 bg-blue-50' : 'border-slate-200 hover:border-slate-300')}>
                     <div className={cn('w-10 h-10 rounded-xl flex items-center justify-center', reviewStatus === 'rebook_suggested' ? 'bg-blue-100' : 'bg-slate-100')}><CalendarCheck className={cn('w-5 h-5', reviewStatus === 'rebook_suggested' ? 'text-blue-700' : 'text-slate-500')} /></div>
-                    <div><p className={cn('text-sm font-semibold', reviewStatus === 'rebook_suggested' ? 'text-blue-700' : 'text-slate-800')}>建议复诊</p><p className="text-xs text-slate-500">需要患者回院检查</p></div>
+                    <div className="flex-1"><p className={cn('text-sm font-semibold', reviewStatus === 'rebook_suggested' ? 'text-blue-700' : 'text-slate-800')}>建议复诊</p><p className="text-xs text-slate-500">需要患者回院检查，将自动生成复诊待办通知护士联系</p></div>
                   </button>
                 </div>
               </div>

@@ -1,14 +1,19 @@
 import { create } from 'zustand';
-import type { Patient, Doctor, FollowUpPlan, FollowUpRecord, Symptoms, ResultStatus, TreatmentType, DoctorReviewStatus } from '@/types';
-import { mockPatients, mockDoctors, mockPlans, mockRecords, defaultCurrentNurse } from '@/data/mockData';
+import type {
+  Patient, Doctor, FollowUpPlan, FollowUpRecord, Symptoms, ResultStatus,
+  TreatmentType, DoctorReviewStatus, RebookTask, SummaryRow,
+  RebookTaskStatus
+} from '@/types';
+import { mockPatients, mockDoctors, mockPlans, mockRecords, mockRebookTasks, defaultCurrentNurse } from '@/data/mockData';
 import { TREATMENT_PRESETS } from '@/data/presets';
-import { generateId, getTodayStr, addDays, formatDate } from '@/utils/helpers';
+import { generateId, getTodayStr, addDays, formatDate, getTreatmentLabel } from '@/utils/helpers';
 
 interface AppStore {
   patients: Patient[];
   doctors: Doctor[];
   plans: FollowUpPlan[];
   records: FollowUpRecord[];
+  rebookTasks: RebookTask[];
   currentNurse: string;
 
   addPatient: (patient: Omit<Patient, 'id'>) => Patient;
@@ -41,11 +46,23 @@ interface AppStore {
   }) => void;
 
   getPendingPlans: () => FollowUpPlan[];
+  getSnoozedPlans: () => FollowUpPlan[];
   getOverduePlans: () => FollowUpPlan[];
   getPlansByPatientId: (patientId: string) => FollowUpPlan[];
   getRecordsByPatientId: (patientId: string) => FollowUpRecord[];
   getRecordsByPlanId: (planId: string) => FollowUpRecord | undefined;
   getPendingReviewRecords: () => FollowUpRecord[];
+
+  getRebookTasks: (filters?: { status?: string }) => RebookTask[];
+  createRebookTask: (params: {
+    recordId: string;
+    doctorNote: string;
+  }) => RebookTask | null;
+  updateRebookTaskStatus: (taskId: string, params: {
+    status: RebookTaskStatus;
+    nurseNote?: string;
+  }) => void;
+
   searchPlans: (filters?: {
     priority?: string;
     treatmentType?: string;
@@ -59,6 +76,7 @@ interface AppStore {
     resultStatus?: string;
     doctorId?: string;
   }) => FollowUpRecord[];
+
   exportRecordsCsv: (filters?: {
     startDate?: string;
     endDate?: string;
@@ -67,6 +85,15 @@ interface AppStore {
     resultStatus?: string;
     doctorId?: string;
   }) => string;
+  exportRecordsCsvWithSummary: (filters?: {
+    startDate?: string;
+    endDate?: string;
+    keyword?: string;
+    treatmentType?: string;
+    resultStatus?: string;
+    doctorId?: string;
+  }) => string;
+
   getRecordsStats: (filters?: {
     startDate?: string;
     endDate?: string;
@@ -75,6 +102,12 @@ interface AppStore {
     resultStatus?: string;
     doctorId?: string;
   }) => { total: number; normal: number; needReview: number; rebook: number; normalPct: number; needReviewPct: number; rebookPct: number };
+  getSummaryReport: (filters?: {
+    startDate?: string;
+    endDate?: string;
+    treatmentType?: string;
+    doctorId?: string;
+  }) => SummaryRow[];
 }
 
 const STORAGE_KEY = 'dental-followup-data';
@@ -83,15 +116,15 @@ function loadFromStorage() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
-  } catch {}
+  } catch { }
   return null;
 }
 
 function saveToStorage(state: Partial<AppStore>) {
   try {
-    const { patients, doctors, plans, records, currentNurse } = state;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ patients, doctors, plans, records, currentNurse }));
-  } catch {}
+    const { patients, doctors, plans, records, rebookTasks, currentNurse } = state;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ patients, doctors, plans, records, rebookTasks, currentNurse }));
+  } catch { }
 }
 
 function parseDate(dateStr: string): Date {
@@ -112,6 +145,7 @@ export const useAppStore = create<AppStore>((set, get) => {
     doctors: mockDoctors,
     plans: mockPlans,
     records: mockRecords,
+    rebookTasks: mockRebookTasks,
     currentNurse: defaultCurrentNurse
   };
 
@@ -227,8 +261,29 @@ export const useAppStore = create<AppStore>((set, get) => {
             doctorReviewDate: getTodayStr()
           };
         });
-        saveToStorage({ ...s, records });
-        return { records };
+
+        let rebookTasks = s.rebookTasks;
+        if (reviewStatus === 'rebook_suggested') {
+          const record = s.records.find(r => r.id === recordId);
+          const plan = s.plans.find(p => p.id === record?.planId);
+          if (record && plan) {
+            const newTask: RebookTask = {
+              id: generateId(),
+              recordId,
+              patientId: record.patientId,
+              doctorId: plan.doctorId,
+              treatmentType: plan.treatmentType,
+              doctorNote: reviewNote,
+              status: 'pending_contact',
+              createdAt: new Date().toISOString(),
+              createdBy: get().currentNurse
+            };
+            rebookTasks = [...s.rebookTasks, newTask];
+          }
+        }
+
+        saveToStorage({ ...s, records, rebookTasks });
+        return { records, rebookTasks };
       });
     },
 
@@ -244,6 +299,20 @@ export const useAppStore = create<AppStore>((set, get) => {
           return p.scheduledDate <= today;
         }
         return p.scheduledDate <= today;
+      });
+    },
+
+    getSnoozedPlans: () => {
+      const now = new Date();
+      return get().plans.filter(p => {
+        if (p.status !== 'snoozed') return false;
+        if (p.remindAt) {
+          return new Date(p.remindAt) > now;
+        }
+        return false;
+      }).sort((a, b) => {
+        if (!a.remindAt || !b.remindAt) return 0;
+        return new Date(a.remindAt).getTime() - new Date(b.remindAt).getTime();
       });
     },
 
@@ -271,6 +340,55 @@ export const useAppStore = create<AppStore>((set, get) => {
       get().records
         .filter(r => r.resultStatus === 'need_review' && r.doctorReviewStatus === 'pending')
         .sort((a, b) => b.followUpDate.localeCompare(a.followUpDate)),
+
+    getRebookTasks: (filters) => {
+      let result = [...get().rebookTasks];
+      if (filters?.status && filters.status !== 'all') {
+        result = result.filter(t => t.status === filters.status);
+      }
+      return result.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    },
+
+    createRebookTask: ({ recordId, doctorNote }) => {
+      const record = get().records.find(r => r.id === recordId);
+      const plan = get().plans.find(p => p.id === record?.planId);
+      if (!record || !plan) return null;
+
+      const newTask: RebookTask = {
+        id: generateId(),
+        recordId,
+        patientId: record.patientId,
+        doctorId: plan.doctorId,
+        treatmentType: plan.treatmentType,
+        doctorNote,
+        status: 'pending_contact',
+        createdAt: new Date().toISOString(),
+        createdBy: get().currentNurse
+      };
+
+      set((s) => {
+        const rebookTasks = [...s.rebookTasks, newTask];
+        saveToStorage({ ...s, rebookTasks });
+        return { rebookTasks };
+      });
+      return newTask;
+    },
+
+    updateRebookTaskStatus: (taskId, { status, nurseNote }) => {
+      set((s) => {
+        const rebookTasks = s.rebookTasks.map(t => {
+          if (t.id !== taskId) return t;
+          return {
+            ...t,
+            status,
+            nurseNote: nurseNote || t.nurseNote,
+            contactDate: getTodayStr()
+          };
+        });
+        saveToStorage({ ...s, rebookTasks });
+        return { rebookTasks };
+      });
+    },
 
     searchPlans: (filters) => {
       let result = [...get().plans];
@@ -352,6 +470,26 @@ export const useAppStore = create<AppStore>((set, get) => {
       return BOM + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
     },
 
+    exportRecordsCsvWithSummary: (filters) => {
+      const recordsCsv = get().exportRecordsCsv(filters);
+      const summary = get().getSummaryReport(filters);
+      let summaryPart = '\n\n===== 汇总报表 =====\n';
+      summaryPart += ['医生', '科室', '治疗项目', '总完成量', '正常恢复', '需复核', '已复核完成', '建议复诊'].join(',') + '\n';
+      summary.forEach(row => {
+        summaryPart += [
+          row.doctorName,
+          row.department,
+          getTreatmentLabel(row.treatmentType),
+          row.totalCompleted,
+          row.normal,
+          row.needReview,
+          row.reviewHandled,
+          row.rebookSuggested
+        ].map(v => `"${v}"`).join(',') + '\n';
+      });
+      return recordsCsv + summaryPart;
+    },
+
     getRecordsStats: (filters) => {
       const recs = get().searchRecords(filters);
       const total = recs.length;
@@ -367,6 +505,47 @@ export const useAppStore = create<AppStore>((set, get) => {
         needReviewPct: total > 0 ? Math.round(needReview / total * 100) : 0,
         rebookPct: total > 0 ? Math.round(rebook / total * 100) : 0
       };
+    },
+
+    getSummaryReport: (filters) => {
+      const { getDoctorById, plans } = get();
+      const recs = get().searchRecords(filters);
+      const map = new Map<string, SummaryRow>();
+
+      recs.forEach(record => {
+        const plan = plans.find(p => p.id === record.planId);
+        if (!plan) return;
+
+        const key = `${plan.doctorId}-${plan.treatmentType}`;
+        const doctor = getDoctorById(plan.doctorId);
+        if (!doctor) return;
+
+        if (!map.has(key)) {
+          map.set(key, {
+            doctorId: plan.doctorId,
+            doctorName: doctor.name,
+            department: doctor.department,
+            treatmentType: plan.treatmentType,
+            totalCompleted: 0,
+            normal: 0,
+            needReview: 0,
+            reviewHandled: 0,
+            rebookSuggested: 0
+          });
+        }
+
+        const row = map.get(key)!;
+        row.totalCompleted++;
+        if (record.resultStatus === 'normal') row.normal++;
+        if (record.resultStatus === 'need_review') row.needReview++;
+        if (record.doctorReviewStatus === 'handled') row.reviewHandled++;
+        if (record.doctorReviewStatus === 'rebook_suggested') row.rebookSuggested++;
+      });
+
+      return Array.from(map.values()).sort((a, b) => {
+        if (a.doctorId !== b.doctorId) return a.doctorName.localeCompare(b.doctorName);
+        return a.treatmentType.localeCompare(b.treatmentType);
+      });
     }
   };
 });

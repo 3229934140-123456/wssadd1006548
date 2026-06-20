@@ -7,9 +7,10 @@ export default function TopNav() {
   const location = useLocation();
   const currentNurse = useAppStore(s => s.currentNurse);
   const pendingReviewCount = useAppStore(s => s.getPendingReviewRecords().length);
+  const pendingRebookCount = useAppStore(s => s.getRebookTasks({ status: 'pending_contact' }).length);
 
   const navItems = [
-    { path: '/', label: '今日待回访', icon: CalendarDays, badge: useAppStore.getState().getPendingPlans().length },
+    { path: '/', label: '今日待回访', icon: CalendarDays, badge: useAppStore.getState().getPendingPlans().length + pendingRebookCount },
     { path: '/new', label: '新增回访', icon: PlusCircle },
     { path: '/review', label: '医生复核', icon: ClipboardCheck, badge: pendingReviewCount },
     { path: '/records', label: '回访记录', icon: FileText }
